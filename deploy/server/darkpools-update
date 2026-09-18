@@ -44,7 +44,12 @@ fi
 log "new build $short, downloading"
 rm -rf "$target" "$RELEASES/.tmp"
 mkdir -p "$RELEASES/.tmp"
-crane export "$IMAGE" - | tar -x -C "$RELEASES/.tmp" --strip-components=1 app
+# Layer tars name entries "app/..." (Docker/BuildKit); fall back to "./app/..." just in case.
+if ! { crane export "$IMAGE" - | tar -x -C "$RELEASES/.tmp" --strip-components=1 app; } 2>/dev/null \
+   || [ ! -f "$RELEASES/.tmp/server.js" ]; then
+  rm -rf "$RELEASES/.tmp"; mkdir -p "$RELEASES/.tmp"
+  crane export "$IMAGE" - | tar -x -C "$RELEASES/.tmp" --strip-components=2 ./app || true
+fi
 if [ ! -f "$RELEASES/.tmp/server.js" ]; then
   log "bundle is missing server.js; top-level entries of the image were:"
   crane export "$IMAGE" - | tar -t | cut -d/ -f1 | sort -u | head -30 || true
