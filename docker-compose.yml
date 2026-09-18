@@ -1,0 +1,52 @@
+services:
+  app:
+    build: .
+    image: darkpools:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # The app always talks to the bundled database; DATABASE_URL in .env is for local development.
+      DATABASE_URL: postgresql://darkpools:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/darkpools
+      UPLOAD_DIR: /app/uploads
+      PORT: "3000"
+    ports:
+      # Bound to localhost only; the reverse proxy on the server forwards to it.
+      - "127.0.0.1:${APP_PORT:-3300}:3000"
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: darkpools
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: darkpools
+    # Small-server settings: this database serves one user.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U darkpools -d darkpools"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:
+  uploads:
