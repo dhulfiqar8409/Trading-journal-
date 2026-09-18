@@ -80,6 +80,9 @@ try {
     for (const migration of pending) {
       await client.query("BEGIN");
       try {
+        // Never hang a deployment on a busy table: give up on a DDL lock after 30 seconds
+        // and roll back, which leaves the running build in place and the migration pending.
+        await client.query("SET LOCAL lock_timeout = '30s'");
         await client.query(migration.sql);
         await client.query(
           'INSERT INTO "_prisma_migrations" (id, checksum, migration_name, started_at, finished_at, applied_steps_count) VALUES ($1, $2, $3, now(), now(), 1)',
