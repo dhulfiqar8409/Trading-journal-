@@ -72,6 +72,11 @@ SESSION_SECRET=${SESSION}
 UPLOAD_DIR=${BASE}/shared/uploads
 ENV
 fi
+# One-time setup token: the first-run page only creates the owner account when the link
+# carries this token, so nobody else can claim the account before you do.
+if ! grep -q '^SETUP_TOKEN=' "$BASE/shared/.env"; then
+  echo "SETUP_TOKEN=$(openssl rand -hex 16)" >> "$BASE/shared/.env"
+fi
 chown root:www-data "$BASE/shared/.env"; chmod 640 "$BASE/shared/.env"
 chown -R www-data:www-data "$BASE/shared/uploads"
 
@@ -101,6 +106,7 @@ systemctl enable darkpools.service >/dev/null 2>&1
 systemctl enable --now darkpools-update.timer >/dev/null 2>&1
 
 log "7/7 nginx server block for darkpools.deeapps.net"
+curl -fsSL "$RAW/nginx-darkpools-http.conf" -o /etc/nginx/conf.d/darkpools.conf
 curl -fsSL "$RAW/nginx-darkpools.conf" -o /etc/nginx/sites-available/darkpools
 ln -sfn /etc/nginx/sites-available/darkpools /etc/nginx/sites-enabled/darkpools
 nginx -t
@@ -113,3 +119,6 @@ echo "darkpools.service: $(systemctl is-active darkpools)"
 echo "timer: $(systemctl is-active darkpools-update.timer)"
 echo "health (local): $(curl -fsS --max-time 5 http://127.0.0.1:3300/api/health || echo unhealthy)"
 echo "health (via nginx): $(curl -fsS --max-time 5 --resolve darkpools.deeapps.net:443:127.0.0.1 https://darkpools.deeapps.net/api/health || echo unhealthy)"
+echo
+echo "Create your account with this link (keep it to yourself; it stops working once the account exists):"
+echo "  https://darkpools.deeapps.net/setup?token=$(grep '^SETUP_TOKEN=' "$BASE/shared/.env" | cut -d= -f2)"
