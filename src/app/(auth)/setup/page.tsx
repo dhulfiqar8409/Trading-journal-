@@ -15,15 +15,15 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
     return (
       <>
         <h1 className="mb-1 text-lg font-semibold">Setup link required</h1>
-        <p className="text-sm text-muted">This journal is waiting for its owner. Open the setup link printed by the server setup to create the account.</p>
+        <p className="text-sm text-muted">This journal is waiting for its admin. Open the setup link printed by the server setup to create the admin account.</p>
       </>
     );
   }
   return (
     <>
-      <h1 className="mb-1 text-lg font-semibold">Create your account</h1>
+      <h1 className="mb-1 text-lg font-semibold">Create the admin account</h1>
       <p className="mb-5 text-sm text-muted">
-        This journal has a single owner. Create the account once; afterwards this page only redirects to sign-in.
+        The admin creates every other account; nobody can sign themselves up. This page works once and then only redirects to sign-in.
       </p>
       <SetupForm token={required ? token : undefined} />
     </>

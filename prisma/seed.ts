@@ -8,6 +8,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { Decimal } from "../src/lib/decimal";
 import { computeTradeMetrics, type Side } from "../src/lib/pnl";
+import { usernameFromEmail } from "../src/lib/users";
 
 try {
   process.loadEnvFile(".env");
@@ -101,13 +102,15 @@ function round(value: number, tick: number): string {
 
 async function main() {
   const email = process.env.SEED_EMAIL ?? "demo@darkpools.local";
+  const username = process.env.SEED_USERNAME ?? usernameFromEmail(email, "demo");
   const password = process.env.SEED_PASSWORD ?? "darkpools-demo";
   const passwordHash = await bcrypt.hash(password, 12);
 
+  // The demo account is an admin so a seeded instance can manage users straight away.
   const user = await db.user.upsert({
-    where: { email },
+    where: { username },
     update: {},
-    create: { email, passwordHash, name: "Demo Trader", timeZone: "America/New_York" },
+    create: { username, email, passwordHash, name: "Demo Trader", role: "ADMIN", passwordChangedAt: new Date(), timeZone: "America/New_York" },
   });
 
   // Idempotent: wipe this user's trades, tags and accounts before re-seeding.
@@ -194,8 +197,8 @@ async function main() {
     created++;
   }
 
-  console.log(`Seeded ${created} trades, ${tags.length} tags and 2 accounts for ${email}`);
-  console.log(`Sign in with ${email} / ${password}`);
+  console.log(`Seeded ${created} trades, ${tags.length} tags and 2 accounts for @${username} (${email})`);
+  console.log(`Sign in with username ${username} / ${password}`);
 }
 
 main()

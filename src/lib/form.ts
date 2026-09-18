@@ -7,7 +7,7 @@ export interface BrokenRuleInfo {
 }
 
 export type ActionResult =
-  | { ok: true; message?: string }
+  | { ok: true; message?: string; data?: Record<string, string> }
   | { ok: false; error: string; fieldErrors?: Record<string, string>; brokenRules?: BrokenRuleInfo[] };
 export type ActionState = ActionResult | null;
 
@@ -39,8 +39,9 @@ export function failure(error: string, fieldErrors?: Record<string, string>, bro
   return { ok: false, error, fieldErrors, brokenRules };
 }
 
-export function success(message?: string): ActionResult {
-  return { ok: true, message };
+/** `data` carries small one-time values back to the form, such as a generated temporary password. */
+export function success(message?: string, data?: Record<string, string>): ActionResult {
+  return { ok: true, message, data };
 }
 
 /** Only allow same-site relative redirect targets. */

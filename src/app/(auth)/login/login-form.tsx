@@ -9,10 +9,20 @@ export function LoginForm({ next }: { next?: string }) {
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {next ? <input type="hidden" name="next" value={next} /> : null}
       <div>
-        <label htmlFor="email" className="label">
-          Email
+        <label htmlFor="identifier" className="label">
+          Username
         </label>
-        <input id="email" name="email" type="email" autoComplete="email" required className="input" />
+        <input
+          id="identifier"
+          name="identifier"
+          autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          required
+          maxLength={254}
+          className="input"
+        />
+        <p className="hint">Your account&apos;s email works here too.</p>
       </div>
       <div>
         <label htmlFor="password" className="label">

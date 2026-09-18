@@ -16,6 +16,7 @@ import {
   SunIcon,
   TagIcon,
   UploadIcon,
+  UsersIcon,
   WalletIcon,
 } from "@/components/icons";
 
@@ -42,14 +43,21 @@ const SECONDARY: NavItem[] = [
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
+const ADMIN: NavItem[] = [{ href: "/admin/users", label: "Users", icon: UsersIcon }];
+
+function secondaryFor(isAdmin: boolean): NavItem[] {
+  return isAdmin ? [...SECONDARY, ...ADMIN] : SECONDARY;
+}
+
 function isActive(pathname: string, item: NavItem): boolean {
   if (item.exact) return pathname === item.href;
   if (item.href === "/trades") return pathname.startsWith("/trades") && pathname !== "/trades/new";
   return pathname === item.href || pathname.startsWith(`${item.href}/`);
 }
 
-export function SidebarNav({ logout }: { logout: React.ReactNode }) {
+export function SidebarNav({ logout, isAdmin = false }: { logout: React.ReactNode; isAdmin?: boolean }) {
   const pathname = usePathname();
+  const secondary = secondaryFor(isAdmin);
   const render = (item: NavItem) => {
     const active = isActive(pathname, item);
     return (
@@ -71,18 +79,19 @@ export function SidebarNav({ logout }: { logout: React.ReactNode }) {
       <div className="flex flex-col gap-1">{PRIMARY.map(render)}</div>
       <div className="flex flex-col gap-1">
         <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted">Manage</p>
-        {SECONDARY.map(render)}
+        {secondary.map(render)}
       </div>
       <div className="mt-auto">{logout}</div>
     </nav>
   );
 }
 
-export function BottomNav({ logout }: { logout: React.ReactNode }) {
+export function BottomNav({ logout, isAdmin = false }: { logout: React.ReactNode; isAdmin?: boolean }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const secondary = secondaryFor(isAdmin);
 
-  const moreActive = SECONDARY.some((item) => isActive(pathname, item));
+  const moreActive = secondary.some((item) => isActive(pathname, item));
   const tab = (active: boolean) =>
     `pressable flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium ${active ? "text-signature" : "text-muted"}`;
 
@@ -99,7 +108,7 @@ export function BottomNav({ logout }: { logout: React.ReactNode }) {
               </button>
             </div>
             <div className="flex flex-col gap-1">
-              {SECONDARY.map((item) => (
+              {secondary.map((item) => (
                 <Link
                   key={item.href}
                   href={item.href}

@@ -20,7 +20,11 @@ export default async function SettingsPage() {
     <div className="flex flex-col gap-4">
       <div>
         <h1 className="page-title">Settings</h1>
-        <p className="mt-1 text-sm text-muted">Signed in as {user.email}.</p>
+        <p className="mt-1 text-sm text-muted">
+          Signed in as <span className="num text-ink-2">@{user.username}</span>
+          {user.email ? ` (${user.email})` : ""}
+          {user.role === "ADMIN" ? ", admin." : "."}
+        </p>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="card card-pad">
@@ -103,6 +107,15 @@ export default async function SettingsPage() {
             </ul>
           )}
         </section>
+        {user.role === "ADMIN" ? (
+          <section className="card card-pad" aria-label="Administration">
+            <h2 className="mb-1 text-sm font-semibold">Administration</h2>
+            <p className="mb-3 text-sm text-muted">Create accounts, reset passwords, deactivate or delete users. Their journals stay their own.</p>
+            <Link href="/admin/users" className="btn">
+              Manage users
+            </Link>
+          </section>
+        ) : null}
         <section className="card card-pad">
           <h2 className="mb-1 text-sm font-semibold">Session</h2>
           <p className="mb-3 text-sm text-muted">Sessions last 30 days on this device.</p>

@@ -5,8 +5,8 @@ that already hosts two other applications.
 
 ## Overview
 
-Darkpools is a single-owner journal for logging trades, reviewing execution and seeing whether
-the numbers add up. It is built for a phone first and a desktop second: a dark, restrained
+Darkpools is a private journal for logging trades, reviewing execution and seeing whether the
+numbers add up. One server holds a few accounts, each with its own journal that nobody else sees. It is built for a phone first and a desktop second: a dark, restrained
 interface with green and red reserved for the sign of P&L.
 
 ### Features
@@ -35,8 +35,11 @@ interface with green and red reserved for the sign of P&L.
   from the phone's share sheet into a draft trade.
 - **Sharing and ownership**: revocable read-only links for a trade or a week, saved CSV import
   mappings per broker, and full exports as JSON and CSV.
-- **Single owner**: the first visit to `/setup` creates the only account; afterwards the page
-  redirects to sign-in. Every record is still scoped by user id.
+- **Accounts**: the first visit to `/setup` creates the admin account; there is no self-enrollment.
+  The admin creates users under `/admin/users` with a temporary password shown once, resets
+  passwords, deactivates, reactivates and deletes accounts. Users sign in by username, must
+  replace a temporary password before anything else, and see only their own records; the admin
+  manages accounts, never other people's journals.
 
 The full scope is described in [`docs/product-spec.md`](docs/product-spec.md).
 
@@ -99,16 +102,28 @@ All variables are documented in [`.env.example`](.env.example).
 | `DATABASE_URL` | yes | PostgreSQL connection string used by Prisma. In docker compose the app service always connects to the bundled `db` service, so this value only matters outside Docker. |
 | `SESSION_SECRET` | yes | Secret that signs session cookies. At least 32 characters; `openssl rand -base64 48` makes a good one. |
 | `UPLOAD_DIR` | no | Directory for trade screenshots. Defaults to `./uploads`; the Docker image uses `/app/uploads`. |
-| `SETUP_TOKEN` | no | When set, the first-run page `/setup` answers 403 unless the request carries `?token=<value>` (the value is compared in constant time and passed through the form). Once the owner exists, `/setup` redirects to sign-in regardless. Unset keeps `/setup` open until the account is created. |
+| `SETUP_TOKEN` | no | When set, the first-run page `/setup` (which creates the admin account) answers 403 unless the request carries `?token=<value>` (the value is compared in constant time and passed through the form). Once any account exists, `/setup` redirects to sign-in regardless. Unset keeps `/setup` open until the admin account is created. |
 | `POSTGRES_PASSWORD` | compose | Password of the `darkpools` database role created by the `db` service and used to build the app's `DATABASE_URL`. |
 | `APP_PORT` | compose | Host port (bound to 127.0.0.1) that docker compose publishes the app on. Defaults to 3300. |
-| `SEED_EMAIL`, `SEED_PASSWORD` | seed only | Credentials of the demo owner created by `npm run seed`. |
+| `SEED_USERNAME`, `SEED_EMAIL`, `SEED_PASSWORD` | seed only | Credentials of the demo admin created by `npm run seed` (the username defaults to the email's local part). |
+
+### Accounts and sessions
+
+Usernames are 3-32 characters (letters, digits, dot, underscore, hyphen), case-insensitive and
+stored in lowercase; an email is optional and can be typed instead of the username at sign-in.
+Roles are `ADMIN` and `USER`. Admin actions are checked on the server, an admin cannot deactivate,
+demote or delete their own account, and the last active admin cannot be removed. Deleting an
+account removes its trades, days, rules, tags, share links, import presets, attachments and the
+screenshot files on disk.
 
 Sessions are JWTs signed with `SESSION_SECRET`, stored in an HttpOnly, SameSite=Lax cookie
-(Secure in production) that expires after 30 days. Sign-in is rate limited: five failed attempts
-within fifteen minutes for an email or for a client address (taken from `X-Real-IP`, then the first
-`X-Forwarded-For` entry, as set by the reverse proxy) block further attempts for the rest of the
-window with the same generic message; a successful sign-in clears the counter.
+(Secure in production) that expires after 30 days. The token carries the account's session
+version, so a password change or reset, a deactivation or a deletion rejects every existing
+session at its next request; an account created or reset with a temporary password is sent to
+`/change-password` before anything else. Sign-in is rate limited: five failed attempts within
+fifteen minutes for a username (or email) or for a client address (taken from `X-Real-IP`, then
+the first `X-Forwarded-For` entry, as set by the reverse proxy) block further attempts for the
+rest of the window with the same generic message; a successful sign-in clears the counter.
 
 ## Tests
 
@@ -120,19 +135,21 @@ npx prisma validate
 npm run build
 ```
 
-The end-to-end smoke test drives the real application: first-run setup (or sign-in when the owner
+The end-to-end smoke test drives the real application: first-run setup (or sign-in when the admin
 exists), creating a trade, the trade list and detail pages, the dashboard and its charts, a CSV
 import with a duplicate row, the Today check-in and budget bar, a rule-breaking trade with its
 justification and ledger entry, the PWA assets and two-tap capture, the weekly review with a share
-link, import presets and exports, 390px-wide layout checks on every page and the sign-out
-lock-out. Start the app against a database first, then:
+link, import presets and exports, the admin creating a user who signs in with the temporary
+password, is made to replace it and then sees an empty journal and no admin pages, 390px-wide
+layout checks on every page and the sign-out lock-out. Start the app against a database first, then:
 
 ```bash
 E2E_BASE_URL=http://127.0.0.1:3000 npm run e2e
 ```
 
-`E2E_EMAIL` / `E2E_PASSWORD` set the credentials (defaults exist), `E2E_SHOTS_DIR` changes where
-screenshots are written and `PW_CHROMIUM_PATH` points Playwright at a preinstalled Chromium.
+`E2E_USERNAME` / `E2E_EMAIL` / `E2E_PASSWORD` set the admin credentials (defaults exist),
+`E2E_SHOTS_DIR` changes where screenshots are written and `PW_CHROMIUM_PATH` points Playwright at
+a preinstalled Chromium.
 The CI workflow (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests, `prisma validate`,
 the production build and a Docker image build on every push and pull request.
 
@@ -149,8 +166,15 @@ docker compose logs -f app      # migrations run before the server starts
 ```
 
 Then open the app through the reverse proxy that already runs on the server (it forwards to the
-published port; the compose file deliberately contains no proxy) and create the owner account at
+published port; the compose file deliberately contains no proxy) and create the admin account at
 `/setup`.
+
+Production migrations do not use the Prisma CLI: the image and the host deployment run
+`prisma/deploy-migrations.mjs`, a small script that applies `prisma/migrations/*/migration.sql`
+in order and records them in `_prisma_migrations` in the same format as `prisma migrate deploy`,
+each migration inside one transaction. New migrations are still generated locally with
+`npx prisma migrate dev`; a migration that cannot run inside a transaction (such as
+`CREATE INDEX CONCURRENTLY`) would need special handling.
 
 - Uploads live in the `uploads` named volume, the database in the `pgdata` volume.
 - `scripts/backup-db.sh` writes a timestamped `pg_dump` of the running database to `./backups`
@@ -167,9 +191,9 @@ published port; the compose file deliberately contains no proxy) and create the 
   Win rate uses all closed trades in its denominator, expectancy is net P&L per closed trade,
   profit factor is gross profit ÷ |gross loss|, and max drawdown is the largest peak-to-trough
   decline of cumulative P&L from a starting equity of zero.
-- Daily P&L and the calendar bucket trades by exit time in the owner's time zone (Settings).
+- Daily P&L and the calendar bucket trades by exit time in the account's time zone (Settings).
   Trade times are entered and shown in that zone; CSV dates without an offset are read as UTC
-  unless the import is told to use the owner's zone.
+  unless the import is told to use the account's zone.
 - CSV imports are de-duplicated by a hash of symbol, side, quantity, entry price and entry time;
   a file that only carries a P&L column gets its exit price derived so the stored figures stay
   consistent with the formula above.

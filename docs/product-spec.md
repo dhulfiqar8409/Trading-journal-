@@ -1,7 +1,7 @@
 # Darkpools product spec
 
-Darkpools is a personal, phone-first trading journal for a single owner. This document is the
-shipped scope: phase 1 (the consensus core) and phase 2 (what makes it different), with notes on
+Darkpools is a personal, phone-first trading journal. One server holds a few accounts, each with
+a private journal, managed by an admin. This document is the shipped scope: phase 1 (the consensus core) and phase 2 (what makes it different), with notes on
 how each part behaves in the product. Where the phase 2 brief and the implementation differ, the
 implemented behaviour is described.
 
@@ -12,7 +12,7 @@ Guiding rules:
 - Process over outcome: the app rewards rule-following and complete reviews, never green streaks.
 - R first: every result can be read in R-multiples with currency one tap away.
 - No market-data feed: everything is computed from logged trades only.
-- Single user, small server: everything is computed on demand, there are no background workers,
+- A few users, small server: everything is computed on demand, there are no background workers,
   no polling, and reads are server components.
 - Nothing is gated, everything exports.
 
@@ -29,7 +29,8 @@ Guiding rules:
   de-duplication by a hash of symbol, side, quantity, entry price and entry time.
 - **Dashboard**: net result hero, KPI tiles, equity curve, daily bars, calendar heatmap, top
   symbols, results by tag and recent trades over a 7d / 30d / 90d / YTD / all / custom range.
-- **Auth**: email and password, a signed session cookie, a first-run `/setup` page.
+- **Auth**: username and password, a signed session cookie, a first-run `/setup` page that creates
+  the admin account (see Accounts below).
 
 ## Phase 2A: discipline and analytics
 
@@ -163,10 +164,31 @@ Guiding rules:
 - Exports from Settings: everything as one JSON document (accounts, tags, rules, days, trades with
   tags, attachments and rule events), plus CSVs for trades, days, rules and tags.
 
+## Accounts and administration
+
+- The first visit to `/setup` creates the `ADMIN` account (username, optional email, display name,
+  password). With `SETUP_TOKEN` configured the page only answers to the printed setup link, and it
+  stops working as soon as any account exists. There is no self-enrollment anywhere.
+- `/admin/users`, linked from Settings and the navigation for admins only, lists accounts with
+  role, status and last sign-in. The admin creates a user (username, display name, optional email,
+  role, and a typed or generated temporary password shown exactly once), resets a password the
+  same way, deactivates and reactivates, and deletes an account after confirmation. Deleting
+  removes the account's trades, days, rules, tags, share links, import presets, attachments and the
+  screenshot files on disk.
+- Admins cannot deactivate, demote or delete themselves, and the last active admin cannot be
+  removed. Every admin action checks the role on the server.
+- Sessions carry the account's session version. A password change or reset, a deactivation or a
+  deletion invalidates existing sessions at their next request; an account with a temporary
+  password is sent to `/change-password` before anything else.
+- Data isolation is unchanged: every query is scoped by user id, and the admin manages accounts,
+  not other users' data. Sign-in is by username (the account's email works too), with the lockout
+  described in the README.
+
 ## Quality bar
 
 - Every calculation is a pure module under `src/lib` with vitest coverage, including edge cases
   (no stop, no plan, empty window, one trade).
 - Every page works at 390px wide with no horizontal scroll; the Playwright smoke test checks the
-  dashboard, trades, Today, Rules, Reports and the weekly review at that width.
+  dashboard, trades, Today, Rules, Reports, the weekly review, the admin user list and the
+  password page at that width.
 - No feature needs an external API, a paid service, a background worker or polling.

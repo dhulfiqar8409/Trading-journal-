@@ -1,6 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, SESSION_DAYS, signSessionToken } from "@/lib/session-token";
+import { SESSION_COOKIE, SESSION_DAYS, signSessionToken, type SessionClaims } from "@/lib/session-token";
 
 function cookieOptions() {
   return {
@@ -11,8 +11,8 @@ function cookieOptions() {
   };
 }
 
-export async function setSessionCookie(userId: string): Promise<void> {
-  const token = await signSessionToken(userId);
+export async function setSessionCookie(claims: SessionClaims): Promise<void> {
+  const token = await signSessionToken(claims);
   const store = await cookies();
   store.set(SESSION_COOKIE, token, { ...cookieOptions(), maxAge: SESSION_DAYS * 24 * 60 * 60 });
 }

@@ -1,5 +1,5 @@
-// Darkpools data model. Every record hangs off a User so that queries can be
-// scoped by userId even though v1 only ever has a single owner account.
+// Darkpools data model. Every record hangs off a User and every query is scoped
+// by userId; an ADMIN user manages accounts but never sees other users' records.
 
 generator client {
   provider = "prisma-client"
@@ -63,14 +63,29 @@ enum ShareKind {
   WEEK
 }
 
+enum UserRole {
+  ADMIN
+  USER
+}
+
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String
-  timeZone     String      @default("UTC")
-  displayMode  DisplayMode @default(R)
-  createdAt    DateTime    @default(now())
+  id                 String      @id @default(cuid())
+  /** Sign-in name, stored lowercase so uniqueness is case-insensitive. */
+  username           String      @unique
+  email              String?     @unique
+  passwordHash       String
+  name               String
+  role               UserRole    @default(USER)
+  isActive           Boolean     @default(true)
+  /** Set by the admin on creation and password reset; the user must change the password before anything else. */
+  mustChangePassword Boolean     @default(false)
+  /** Carried in every session token; bumping it signs the user out everywhere. */
+  sessionVersion     Int         @default(1)
+  passwordChangedAt  DateTime?
+  lastLoginAt        DateTime?
+  timeZone           String      @default("UTC")
+  displayMode        DisplayMode @default(R)
+  createdAt          DateTime    @default(now())
 
   accounts Account[]
   trades   Trade[]
@@ -276,11 +291,12 @@ model ShareLink {
 
 /** A failed sign-in, kept for the lockout window only. */
 model LoginAttempt {
-  id        String   @id @default(cuid())
-  email     String
-  ip        String
-  createdAt DateTime @default(now())
+  id         String   @id @default(cuid())
+  /** The username or email that was typed, lowercased. */
+  identifier String
+  ip         String
+  createdAt  DateTime @default(now())
 
-  @@index([email, createdAt])
+  @@index([identifier, createdAt])
   @@index([ip, createdAt])
 }

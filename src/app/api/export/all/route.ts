@@ -25,7 +25,7 @@ export async function GET() {
     format: "darkpools-export",
     version: 1,
     exportedAt: new Date().toISOString(),
-    owner: { name: user.name, email: user.email, timeZone: user.timeZone, displayMode: user.displayMode },
+    owner: { username: user.username, name: user.name, email: user.email, timeZone: user.timeZone, displayMode: user.displayMode },
     accounts: accounts.map((a) => ({ id: a.id, name: a.name, broker: a.broker, currency: a.currency, isDefault: a.isDefault, createdAt: a.createdAt })),
     tags: tags.map((t) => ({ id: t.id, name: t.name, kind: t.kind, color: t.color })),
     rules: rules.map((r) => ({ id: r.id, title: r.title, kind: r.kind, value: dec(r.value), timeValue: r.timeValue, active: r.active, createdAt: r.createdAt })),

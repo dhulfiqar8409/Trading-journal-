@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -65,4 +65,14 @@ export async function deleteUploads(userId: string, storedNames: string[]): Prom
       }
     }),
   );
+}
+
+/** Removes everything a deleted account stored: its whole upload directory. */
+export async function deleteUserUploads(userId: string): Promise<void> {
+  if (!USER_ID_RE.test(userId)) throw new Error("Invalid upload reference");
+  try {
+    await rm(path.join(/* turbopackIgnore: true */ uploadRoot(), userId), { recursive: true, force: true });
+  } catch (error) {
+    console.error("failed to delete uploads for account", userId, error);
+  }
 }

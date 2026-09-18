@@ -11,6 +11,7 @@ import { isoWeekKeyOfDateKey } from "../src/lib/weeks";
  */
 test.describe.configure({ mode: "serial" });
 
+const username = process.env.E2E_USERNAME ?? "owner";
 const email = process.env.E2E_EMAIL ?? "owner@example.com";
 const password = process.env.E2E_PASSWORD ?? "correct-horse-battery-staple";
 const shotsDir = process.env.E2E_SHOTS_DIR ?? path.join("test-results", "screenshots");
@@ -46,21 +47,28 @@ function figure(text: string) {
   return page.getByRole("button", { name: new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) });
 }
 
-test("first run: create the owner account, or sign in when it exists", async () => {
+async function signIn(identifier: string, secret: string) {
+  await page.goto("/login");
+  await page.fill("#identifier", identifier);
+  await page.fill("#password", secret);
+  await page.getByRole("button", { name: "Sign in" }).click();
+}
+
+test("first run: create the admin account, or sign in when it exists", async () => {
   await page.goto("/setup");
   await page.waitForURL(/\/(setup|login)(\?.*)?$/);
   if (page.url().includes("/setup")) {
     await shot("01-setup");
+    await expect(page.getByRole("heading", { name: "Create the admin account" })).toBeVisible();
+    await page.fill("#username", username);
     await page.fill("#name", "Owner");
     await page.fill("#email", email);
     await page.fill("#password", password);
     await page.fill("#confirmPassword", password);
-    await page.getByRole("button", { name: "Create account" }).click();
+    await page.getByRole("button", { name: "Create admin account" }).click();
   } else {
     await shot("01-login");
-    await page.fill("#email", email);
-    await page.fill("#password", password);
-    await page.getByRole("button", { name: "Sign in" }).click();
+    await signIn(username, password);
   }
   await page.waitForURL((url) => url.pathname === "/");
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
@@ -170,6 +178,7 @@ test("phone-width layout has no horizontal scroll", async () => {
     ["17-mobile-rules", "/rules"],
     ["18-mobile-reports", "/reports"],
     ["22-mobile-week", `/reports/week/${isoWeekKeyOfDateKey(tradeDate)}`],
+    ["24-mobile-admin-users", "/admin/users"],
   ] as const) {
     await page.goto(url);
     await expect(page.locator("nav[aria-label='Main']").last()).toBeVisible();
@@ -361,6 +370,102 @@ test("weekly review, share links, import presets and exports", async ({ browser 
   expect(exported.daysType).toContain("text/csv");
 });
 
+test("admin creates a user who must replace the temporary password and then sees only an empty journal", async ({ browser }) => {
+  const newUser = `e2e-${stamp.toLowerCase()}`;
+  const temporaryPassword = `temp-${stamp}-pass`;
+  const chosenPassword = `chosen-${stamp}-pass`;
+
+  // The admin creates the account with a typed temporary password, shown once.
+  await page.goto("/admin/users");
+  await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
+  await expect(page.getByRole("listitem", { name: `@${username}` })).toContainText("(you)");
+  // Self-cleaning: accounts left behind by an interrupted run go first.
+  while ((await page.getByRole("listitem", { name: /^@e2e-/ }).count()) > 0) {
+    const leftover = page.getByRole("listitem", { name: /^@e2e-/ }).first();
+    const label = (await leftover.getAttribute("aria-label")) ?? "";
+    await leftover.getByRole("button", { name: "Delete" }).click();
+    await expect(page.getByRole("listitem", { name: label })).toHaveCount(0);
+  }
+  await page.fill("#nu-username", newUser);
+  await page.fill("#nu-name", "Second Trader");
+  await page.getByLabel("Type one now").check();
+  await page.fill("#nu-password", temporaryPassword);
+  await page.getByRole("button", { name: "Create user" }).click();
+  const reveal = page.getByRole("status").filter({ hasText: `Temporary password for @${newUser}` });
+  await expect(reveal).toBeVisible();
+  await expect(reveal.getByRole("textbox", { name: "Temporary password" })).toHaveValue(temporaryPassword);
+  const card = page.getByRole("listitem", { name: `@${newUser}` });
+  await expect(card).toContainText("Temporary password");
+  await expect(card).toContainText("Never");
+  await shot("23-admin-users");
+
+  // The new user signs in elsewhere, is sent to the password page and cannot go anywhere else first.
+  const other = await browser.newContext();
+  const them = await other.newPage();
+  await them.goto("/login");
+  await them.fill("#identifier", newUser.toUpperCase()); // usernames are case-insensitive
+  await them.fill("#password", temporaryPassword);
+  await them.getByRole("button", { name: "Sign in" }).click();
+  await them.waitForURL(/\/change-password$/);
+  await them.goto("/trades");
+  await them.waitForURL(/\/change-password$/);
+  expect(await them.evaluate(() => fetch("/api/export/trades").then((r) => r.status))).toBe(403); // the browser sends the cookie
+  await them.setViewportSize({ width: 390, height: 844 });
+  const widths = await them.evaluate(() => ({
+    scroll: document.scrollingElement?.scrollWidth ?? 0,
+    client: document.scrollingElement?.clientWidth ?? 0,
+  }));
+  expect(widths.scroll, "/change-password overflows horizontally").toBeLessThanOrEqual(widths.client);
+  await them.screenshot({ path: path.join(shotsDir, "25-mobile-change-password.png"), fullPage: true });
+  await them.setViewportSize({ width: 1280, height: 900 });
+  await them.fill("#currentPassword", temporaryPassword);
+  await them.fill("#newPassword", chosenPassword);
+  await them.fill("#confirmPassword", chosenPassword);
+  await them.getByRole("button", { name: "Set password and continue" }).click();
+  await them.waitForURL((url) => url.pathname === "/");
+
+  // An empty journal of their own, and none of the admin pages.
+  await expect(them.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await them.goto("/trades");
+  await expect(them.getByText("No trades yet")).toBeVisible();
+  await expect(them.locator("nav[aria-label='Main']").first().getByRole("link", { name: "Users" })).toHaveCount(0);
+  await them.goto("/admin/users");
+  await expect(them.getByRole("heading", { name: "Page not found" })).toBeVisible();
+  await them.goto("/settings");
+  await expect(them.getByRole("main").getByText(`@${newUser}`)).toBeVisible();
+  await expect(them.getByRole("link", { name: "Manage users" })).toHaveCount(0);
+  await them.screenshot({ path: path.join(shotsDir, "26-user-settings.png"), fullPage: true });
+
+  // The temporary password no longer works and the chosen one does.
+  await them.goto("/settings");
+  await them.getByRole("button", { name: "Log out" }).first().click();
+  await them.waitForURL(/\/login/);
+  await them.fill("#identifier", newUser);
+  await them.fill("#password", temporaryPassword);
+  await them.getByRole("button", { name: "Sign in" }).click();
+  await expect(them.locator("form p[role='alert']")).toContainText("Invalid username or password");
+  await them.fill("#password", chosenPassword);
+  await them.getByRole("button", { name: "Sign in" }).click();
+  await them.waitForURL((url) => url.pathname === "/");
+
+  // Deactivating rejects their session at the next request; deleting removes the account.
+  await page.reload();
+  await expect(card).toContainText("Second Trader");
+  await expect(card).not.toContainText("Temporary password");
+  await card.getByRole("button", { name: "Deactivate" }).click();
+  await expect(card).toContainText("Inactive");
+  await them.goto("/trades");
+  await them.waitForURL(/\/login/);
+  await them.fill("#identifier", newUser);
+  await them.fill("#password", chosenPassword);
+  await them.getByRole("button", { name: "Sign in" }).click();
+  await expect(them.locator("form p[role='alert']")).toContainText("deactivated");
+  await other.close();
+  await card.getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("listitem", { name: `@${newUser}` })).toHaveCount(0);
+  await expect(page.getByRole("listitem", { name: `@${username}` })).toBeVisible();
+});
+
 test("delete this run's trades through the UI", async () => {
   for (const symbol of [`${manualSymbol}X`, manualSymbol, csvSymbol]) {
     for (let i = 0; i < 5; i++) {
@@ -384,6 +489,7 @@ test("logging out blocks protected pages and APIs", async () => {
   await page.goto("/trades");
   await page.waitForURL(/\/login\?next=%2Ftrades/);
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.locator("#identifier")).toBeVisible();
   const api = await page.request.get("/api/export/trades");
   expect(api.status()).toBe(401);
   const health = await page.request.get("/api/health");

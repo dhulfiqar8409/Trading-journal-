@@ -5,6 +5,7 @@ import { BottomNav, LogoutButton, SidebarNav } from "@/components/nav";
 import type { CurrentUser } from "@/lib/auth";
 
 export function AppShell({ user, children }: { user: CurrentUser; children: React.ReactNode }) {
+  const isAdmin = user.role === "ADMIN";
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
       <aside className="hidden w-60 shrink-0 border-r border-line bg-surface md:flex md:flex-col">
@@ -13,11 +14,11 @@ export function AppShell({ user, children }: { user: CurrentUser; children: Reac
           <span className="wordmark">Darkpools</span>
         </div>
         <div className="flex flex-1 flex-col px-3 pb-4">
-          <SidebarNav logout={<LogoutButton action={logoutAction} />} />
+          <SidebarNav logout={<LogoutButton action={logoutAction} />} isAdmin={isAdmin} />
         </div>
         <div className="border-t border-line px-5 py-3 text-xs text-muted">
           <p className="truncate text-ink-2">{user.name}</p>
-          <p className="truncate">{user.email}</p>
+          <p className="num truncate">@{user.username}</p>
         </div>
       </aside>
 
@@ -31,7 +32,7 @@ export function AppShell({ user, children }: { user: CurrentUser; children: Reac
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-24 pt-4 sm:px-6 md:pb-10 md:pt-6">{children}</main>
       </div>
 
-      <BottomNav logout={<LogoutButton action={logoutAction} compact />} />
+      <BottomNav logout={<LogoutButton action={logoutAction} compact />} isAdmin={isAdmin} />
     </div>
   );
 }

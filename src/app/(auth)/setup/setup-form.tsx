@@ -3,6 +3,7 @@
 import { setupAction } from "@/actions/auth";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TimeZoneSelect } from "@/components/timezone-select";
+import { USERNAME_HINT } from "@/lib/users";
 
 export function SetupForm({ token }: { token?: string }) {
   const { state, onSubmit, pending } = useActionForm(setupAction);
@@ -10,17 +11,35 @@ export function SetupForm({ token }: { token?: string }) {
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {token ? <input type="hidden" name="token" value={token} /> : null}
       <div>
-        <label htmlFor="name" className="label">
-          Name
+        <label htmlFor="username" className="label">
+          Username
         </label>
-        <input id="name" name="name" autoComplete="name" required className={fieldClass(state, "name")} />
+        <input
+          id="username"
+          name="username"
+          autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          required
+          minLength={3}
+          maxLength={32}
+          className={fieldClass(state, "username")}
+        />
+        <p className="hint">{USERNAME_HINT} Used to sign in.</p>
+        <FieldError state={state} name="username" />
+      </div>
+      <div>
+        <label htmlFor="name" className="label">
+          Display name
+        </label>
+        <input id="name" name="name" autoComplete="name" required maxLength={100} className={fieldClass(state, "name")} />
         <FieldError state={state} name="name" />
       </div>
       <div>
         <label htmlFor="email" className="label">
-          Email
+          Email <span className="font-normal text-muted">(optional)</span>
         </label>
-        <input id="email" name="email" type="email" autoComplete="email" required className={fieldClass(state, "email")} />
+        <input id="email" name="email" type="email" autoComplete="email" className={fieldClass(state, "email")} />
         <FieldError state={state} name="email" />
       </div>
       <div>
@@ -61,7 +80,7 @@ export function SetupForm({ token }: { token?: string }) {
         <p className="hint">Trade times are shown and entered in this zone. Change it later in Settings.</p>
       </div>
       <FormMessage state={state} />
-      <SubmitButton pendingText="Creating…" pending={pending}>Create account</SubmitButton>
+      <SubmitButton pendingText="Creating…" pending={pending}>Create admin account</SubmitButton>
     </form>
   );
 }

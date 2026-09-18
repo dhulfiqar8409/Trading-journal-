@@ -3,6 +3,7 @@ import { Decimal } from "@/lib/decimal";
 import { ASSET_CLASSES, IMPORT_FIELDS } from "@/lib/csv";
 import { RULE_KIND_INFO, RULE_KINDS } from "@/lib/rules";
 import { isValidTimeZone } from "@/lib/tz";
+import { USERNAME_HINT, USERNAME_RE, normalizeUsername } from "@/lib/users";
 
 export const SIDES = ["LONG", "SHORT"] as const;
 export const TRADE_STATUSES = ["OPEN", "CLOSED"] as const;
@@ -40,10 +41,19 @@ export const emailSchema = z.preprocess(
 export const passwordSchema = z.string().min(10, "Use at least 10 characters").max(200, "Too long");
 export const timeZoneSchema = z.string().trim().min(1).max(64).refine(isValidTimeZone, "Unknown time zone");
 
+export const usernameSchema = z.preprocess(
+  (v) => (typeof v === "string" ? normalizeUsername(v) : v),
+  z.string().regex(USERNAME_RE, USERNAME_HINT),
+);
+export const optionalEmailSchema = z.preprocess(emptyToUndefined, emailSchema.optional());
+export const USER_ROLES = ["ADMIN", "USER"] as const;
+
+/** First run: the admin account. */
 export const setupSchema = z
   .object({
-    name: z.string().trim().min(1, "Enter your name").max(100),
-    email: emailSchema,
+    username: usernameSchema,
+    name: z.string().trim().min(1, "Enter a display name").max(100),
+    email: optionalEmailSchema,
     password: passwordSchema,
     confirmPassword: z.string(),
     timeZone: z.preprocess(emptyToUndefined, timeZoneSchema.optional()),
@@ -52,9 +62,27 @@ export const setupSchema = z
   .refine((d) => d.password === d.confirmPassword, { message: "Passwords do not match", path: ["confirmPassword"] });
 
 export const loginSchema = z.object({
-  email: emailSchema,
+  /** Username, or the account's email; compared in lowercase. */
+  identifier: z.string().trim().min(1, "Enter your username").max(254).transform((v) => v.toLowerCase()),
   password: z.string().min(1, "Enter your password"),
   next: z.preprocess(emptyToUndefined, z.string().optional()),
+});
+
+const optionalPassword = z.preprocess(emptyToUndefined, passwordSchema.optional());
+
+/** Admin: create an account. A typed temporary password is optional; without one, a password is generated. */
+export const adminCreateUserSchema = z.object({
+  username: usernameSchema,
+  name: z.string().trim().min(1, "Enter a display name").max(100),
+  email: optionalEmailSchema,
+  role: z.preprocess(emptyToUndefined, z.enum(USER_ROLES).default("USER")),
+  password: optionalPassword,
+});
+
+/** Admin: reset an account's password, again optionally typed. */
+export const adminResetPasswordSchema = z.object({
+  userId: z.string().min(1).max(64),
+  password: optionalPassword,
 });
 
 export const changePasswordSchema = z
