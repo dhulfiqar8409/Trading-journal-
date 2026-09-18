@@ -32,7 +32,7 @@ Layout on the host:
 ```
 /var/www/darkpools/
   current -> releases/<digest>   # the running build
-  releases/<digest>/             # extracted builds (two are kept)
+  releases/<digest>/             # extracted builds (only the running one is kept; a failed deploy rolls back before pruning)
   shared/.env                    # DATABASE_URL, SESSION_SECRET, SETUP_TOKEN, UPLOAD_DIR (root:www-data, 640)
   shared/uploads/                # screenshots
 ```

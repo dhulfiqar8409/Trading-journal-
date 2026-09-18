@@ -16,7 +16,7 @@ SHARED="$BASE/shared"
 CURRENT="$BASE/current"
 SERVICE="darkpools"
 HEALTH_URL="http://127.0.0.1:3300/api/health"
-KEEP=2
+KEEP=1
 
 log() { echo "[darkpools-update] $*"; }
 
