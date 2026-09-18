@@ -90,7 +90,8 @@ ln -sfn "$target" "$CURRENT"
 systemctl restart "$SERVICE"
 
 healthy=0
-for _ in $(seq 1 30); do
+# A cold start on this small host can take well over a minute; wait up to three.
+for _ in $(seq 1 90); do
   sleep 2
   if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then healthy=1; break; fi
 done
