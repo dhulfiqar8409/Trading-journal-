@@ -21,12 +21,6 @@ ENV DATABASE_URL="postgresql://build:build@localhost:5432/build" \
     SESSION_SECRET="build-time-placeholder-secret-never-used-at-runtime-0000"
 RUN npx prisma generate && npx next build
 
-# ---- prisma-cli: a self-contained Prisma CLI for `migrate deploy` at start-up -
-FROM base AS prisma-cli
-COPY package.json ./
-RUN npm install --no-audit --no-fund --prefix /prisma-cli \
-      "prisma@$(node -p "require('./package.json').devDependencies.prisma")"
-
 # ---- runner ------------------------------------------------------------------
 FROM base AS runner
 ENV NODE_ENV=production \
@@ -43,8 +37,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
-COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./prisma.config.ts
-COPY --from=prisma-cli --chown=nextjs:nodejs /prisma-cli/node_modules ./prisma-cli/node_modules
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh && mkdir -p /app/uploads && chown nextjs:nodejs /app/uploads
 

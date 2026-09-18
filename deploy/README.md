@@ -12,7 +12,9 @@ Flow:
    built on the server.
 2. On the server, `darkpools-update` runs every five minutes from a systemd timer. When the
    image digest changes it exports the image with `crane`, keeps only `/app` (the Next.js
-   standalone server plus the Prisma CLI), applies migrations, switches the
+   standalone server, about 90 MB), applies migrations with `prisma/deploy-migrations.mjs`
+   (a small script that keeps Prisma's own migration table, so the 250 MB Prisma CLI is not
+   shipped), switches the
    `/var/www/darkpools/current` symlink, restarts the service and checks health, rolling
    back on failure. No SSH key or repository secret is involved.
 3. nginx routes `darkpools.deeapps.net` to `127.0.0.1:3300` using the existing wildcard

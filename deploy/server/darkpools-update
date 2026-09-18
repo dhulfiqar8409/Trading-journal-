@@ -4,7 +4,7 @@
 # Builds are the public image ghcr.io/dhulfiqar8409/darkpools:latest, produced by the
 # "Release image" GitHub Actions workflow. Docker is not installed on this host: crane
 # exports the image filesystem and only its /app directory (the Next.js standalone
-# server plus the Prisma CLI for migrations) is kept, under /var/www/darkpools/releases.
+# server plus the migration applier) is kept, under /var/www/darkpools/releases.
 #
 # Usage: darkpools-update [--retry]   (--retry re-attempts a build that failed earlier)
 set -euo pipefail
@@ -51,8 +51,8 @@ for dir in "$RELEASES"/*/; do
 done
 rm -rf "$RELEASES/.tmp"
 avail_mb="$(df --output=avail -m "$RELEASES" | tail -1 | tr -d ' ')"
-if [ "$avail_mb" -lt "${MIN_FREE_MB:-700}" ]; then
-  log "only ${avail_mb} MB free under $RELEASES; need ${MIN_FREE_MB:-700} MB to deploy safely"
+if [ "$avail_mb" -lt "${MIN_FREE_MB:-300}" ]; then
+  log "only ${avail_mb} MB free under $RELEASES; need ${MIN_FREE_MB:-300} MB to deploy safely"
   exit 1
 fi
 
@@ -78,8 +78,7 @@ mv "$RELEASES/.tmp" "$target"
 
 log "applying database migrations"
 set -a; . "$SHARED/.env"; set +a
-export CHECKPOINT_DISABLE=1 PRISMA_HIDE_UPDATE_MESSAGE=1
-if ! ( cd "$target" && /usr/bin/node prisma-cli/node_modules/prisma/build/index.js migrate deploy --config prisma.config.ts ); then
+if ! ( cd "$target" && /usr/bin/node prisma/deploy-migrations.mjs ); then
   log "migrations failed for $short; the running build is untouched"
   touch "$target/FAILED"
   exit 1
