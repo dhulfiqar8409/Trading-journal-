@@ -2,6 +2,7 @@
 
 import { saveCheckInAction, saveReviewAction } from "@/actions/days";
 import { justifyEventAction } from "@/actions/rules";
+import { DictationButton } from "@/components/dictation";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import type { DayDTO, TagDTO } from "@/lib/serialize";
 
@@ -13,7 +14,7 @@ function Scale({ name, label, value, low, high }: { name: string; label: string;
         {[1, 2, 3, 4, 5].map((n) => (
           <label key={n} className="cursor-pointer">
             <input type="radio" name={name} value={n} defaultChecked={value === n} className="peer sr-only" />
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-line text-sm text-muted peer-checked:border-accent peer-checked:bg-accent-soft peer-checked:text-ink peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-line text-sm text-muted transition-colors peer-checked:border-signature peer-checked:bg-signature-soft peer-checked:text-ink peer-focus-visible:ring-2 peer-focus-visible:ring-signature/40">
               {n}
             </span>
           </label>
@@ -57,7 +58,7 @@ export function CheckInForm({ dateKey, day, setups }: { dateKey: string; day: Da
             {setups.map((tag) => (
               <label key={tag.id} className="cursor-pointer">
                 <input type="checkbox" name="allowedSetupIds" value={tag.id} defaultChecked={allowed.has(tag.id)} className="peer sr-only" />
-                <span className="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-ink-2 peer-checked:border-accent peer-checked:bg-accent-soft peer-checked:text-ink peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40">
+                <span className="chip">
                   <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color }} aria-hidden />
                   {tag.name}
                 </span>
@@ -67,9 +68,12 @@ export function CheckInForm({ dateKey, day, setups }: { dateKey: string; day: Da
         )}
       </div>
       <div>
-        <label htmlFor="ci-focusNote" className="label">
-          Focus for the day
-        </label>
+        <div className="mb-1 flex items-center justify-between">
+          <label htmlFor="ci-focusNote" className="label mb-0">
+            Focus for the day
+          </label>
+          <DictationButton targetId="ci-focusNote" />
+        </div>
         <textarea id="ci-focusNote" name="focusNote" rows={2} defaultValue={day?.focusNote ?? ""} placeholder="One thing to do well today" className={fieldClass(state, "focusNote")} />
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -98,21 +102,30 @@ export function ReviewForm({ dateKey, day }: { dateKey: string; day: DayDTO | nu
     <form onSubmit={onSubmit} className="flex flex-col gap-3">
       <input type="hidden" name="date" value={dateKey} />
       <div>
-        <label htmlFor="rv-right" className="label">
-          What went right?
-        </label>
+        <div className="mb-1 flex items-center justify-between">
+          <label htmlFor="rv-right" className="label mb-0">
+            What went right?
+          </label>
+          <DictationButton targetId="rv-right" />
+        </div>
         <textarea id="rv-right" name="wentRight" rows={2} defaultValue={day?.wentRight ?? ""} className={fieldClass(state, "wentRight")} />
       </div>
       <div>
-        <label htmlFor="rv-wrong" className="label">
-          What went wrong?
-        </label>
+        <div className="mb-1 flex items-center justify-between">
+          <label htmlFor="rv-wrong" className="label mb-0">
+            What went wrong?
+          </label>
+          <DictationButton targetId="rv-wrong" />
+        </div>
         <textarea id="rv-wrong" name="wentWrong" rows={2} defaultValue={day?.wentWrong ?? ""} className={fieldClass(state, "wentWrong")} />
       </div>
       <div>
-        <label htmlFor="rv-change" className="label">
-          One change for tomorrow
-        </label>
+        <div className="mb-1 flex items-center justify-between">
+          <label htmlFor="rv-change" className="label mb-0">
+            One change for tomorrow
+          </label>
+          <DictationButton targetId="rv-change" />
+        </div>
         <textarea id="rv-change" name="oneChange" rows={2} defaultValue={day?.oneChange ?? ""} className={fieldClass(state, "oneChange")} />
       </div>
       <div>

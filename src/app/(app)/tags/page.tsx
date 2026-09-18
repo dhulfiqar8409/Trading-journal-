@@ -18,7 +18,7 @@ export default async function TagsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Tags</h1>
+        <h1 className="page-title">Tags</h1>
         <p className="mt-1 text-sm text-muted">Label trades by strategy, setup and mistake to see which ones make money.</p>
       </div>
       <section className="card card-pad">

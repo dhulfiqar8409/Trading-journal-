@@ -10,7 +10,7 @@ export function AppShell({ user, children }: { user: CurrentUser; children: Reac
       <aside className="hidden w-60 shrink-0 border-r border-line bg-surface md:flex md:flex-col">
         <div className="flex items-center gap-2 px-5 py-5">
           <LogoMark />
-          <span className="text-base font-semibold tracking-tight">Darkpools</span>
+          <span className="wordmark">Darkpools</span>
         </div>
         <div className="flex flex-1 flex-col px-3 pb-4">
           <SidebarNav logout={<LogoutButton action={logoutAction} />} />
@@ -23,7 +23,7 @@ export function AppShell({ user, children }: { user: CurrentUser; children: Reac
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-canvas/90 px-4 py-3 backdrop-blur md:hidden">
-          <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
+          <Link href="/" className="wordmark flex items-center gap-2">
             <LogoMark /> Darkpools
           </Link>
           <span className="truncate text-xs text-muted">{user.name}</span>

@@ -119,6 +119,8 @@ export const tradeSchema = z.object({
   /** Ids of the CUSTOM rules shown on the form, and the subset the owner ticked as followed. */
   customRuleIds: csvIdList,
   customFollowed: idList,
+  /** A shared screenshot waiting to be attached to the new trade. */
+  draftId: optionalText(64),
 });
 export type TradeInput = z.infer<typeof tradeSchema>;
 

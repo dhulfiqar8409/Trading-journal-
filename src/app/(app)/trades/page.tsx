@@ -49,7 +49,7 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold tracking-tight">Trades</h1>
+        <h1 className="page-title">Trades</h1>
         <Link href="/trades/new" className="btn btn-primary">
           New trade
         </Link>
@@ -197,7 +197,7 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
           <ul className="flex flex-col gap-2 md:hidden">
             {trades.map((t) => (
               <li key={t.id}>
-                <Link href={`/trades/${t.id}`} className="card block p-3 hover:bg-surface-2">
+                <Link href={`/trades/${t.id}`} className="card pressable block p-3 hover:bg-surface-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold">{t.symbol}</span>

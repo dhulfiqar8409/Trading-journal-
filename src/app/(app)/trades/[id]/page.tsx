@@ -73,7 +73,7 @@ export default async function TradeDetailPage({
           ← Trades
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">{trade.symbol}</h1>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{trade.symbol}</h1>
           <SideBadge side={trade.side} />
           <StatusBadge status={trade.status} />
           <span className="badge">{trade.assetClass}</span>

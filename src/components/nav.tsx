@@ -57,11 +57,11 @@ export function SidebarNav({ logout }: { logout: React.ReactNode }) {
         key={item.href}
         href={item.href}
         aria-current={active ? "page" : undefined}
-        className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-          active ? "bg-accent-soft text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
+        className={`pressable flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+          active ? "bg-signature-soft text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink"
         }`}
       >
-        <item.icon className={active ? "text-accent-strong" : "text-muted"} />
+        <item.icon className={active ? "text-signature" : "text-muted"} />
         {item.label}
       </Link>
     );
@@ -84,7 +84,7 @@ export function BottomNav({ logout }: { logout: React.ReactNode }) {
 
   const moreActive = SECONDARY.some((item) => isActive(pathname, item));
   const tab = (active: boolean) =>
-    `flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium ${active ? "text-accent-strong" : "text-muted"}`;
+    `pressable flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium ${active ? "text-signature" : "text-muted"}`;
 
   return (
     <>

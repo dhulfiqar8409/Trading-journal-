@@ -11,7 +11,7 @@ export default async function ImportPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Import trades</h1>
+        <h1 className="page-title">Import trades</h1>
         <p className="mt-1 text-sm text-muted">Bring in a broker export or a spreadsheet. Nothing is saved until you press Import.</p>
       </div>
       {accounts.length === 0 ? (

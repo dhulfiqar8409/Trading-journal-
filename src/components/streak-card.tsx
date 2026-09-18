@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { RollUp } from "@/components/roll-up";
 import type { StreakDTO } from "@/lib/queries/streaks";
 
 /** Quiet process streak: sessions fully journaled and rule-compliant, whatever the P&L. */
@@ -15,7 +16,9 @@ export function StreakCard({ data, compact = false }: { data: StreakDTO; compact
         ) : null}
       </div>
       <div className="mt-2 flex items-end gap-3">
-        <p className="text-4xl font-semibold leading-none">{streak.current}</p>
+        <p className="figure text-4xl leading-none">
+          <RollUp value={streak.current} />
+        </p>
         <p className="pb-0.5 text-xs text-muted">
           session{streak.current === 1 ? "" : "s"} in a row fully journaled and on the rules
           <br />

@@ -22,7 +22,7 @@ interface RuleEventWrite {
 }
 
 type BuildResult =
-  | { ok: true; data: TradeWrite; tagIds: string[]; events: RuleEventWrite[] }
+  | { ok: true; data: TradeWrite; tagIds: string[]; events: RuleEventWrite[]; draftId: string | null }
   | { ok: false; result: ActionResult };
 
 /**
@@ -142,7 +142,18 @@ async function buildTradeWrite(user: CurrentUser, formData: FormData, tradeId: s
   const events = await ruleEventsFor(user, input, data, tradeId);
   if (!events.ok) return { ok: false, result: events.result };
 
-  return { ok: true, tagIds: ownedTags.map((t) => t.id), data, events: events.events };
+  return { ok: true, tagIds: ownedTags.map((t) => t.id), data, events: events.events, draftId: input.draftId ?? null };
+}
+
+/** Turn a shared screenshot into an attachment of the trade it was captured for. */
+async function attachDraft(userId: string, tradeId: string, draftId: string | null): Promise<void> {
+  if (!draftId) return;
+  const pending = await db.pendingUpload.findFirst({ where: { id: draftId, userId } });
+  if (!pending) return;
+  await db.$transaction([
+    db.attachment.create({ data: { tradeId, filename: pending.filename, storedName: pending.storedName, mimeType: pending.mimeType, size: pending.size } }),
+    db.pendingUpload.delete({ where: { id: pending.id } }),
+  ]);
 }
 
 function revalidateTradeViews(id?: string) {
@@ -170,6 +181,7 @@ export async function createTradeAction(_prev: ActionState, formData: FormData):
       select: { id: true },
     });
     id = trade.id;
+    await attachDraft(user.id, id, built.draftId);
   } catch (error) {
     console.error("create trade failed", error);
     return failure("Could not save the trade. Check the numbers and try again.");

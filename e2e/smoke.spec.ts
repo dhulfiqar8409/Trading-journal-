@@ -71,10 +71,11 @@ test("create a trade through the UI", async () => {
   await page.fill("#symbol", manualSymbol);
   await page.fill("#quantity", "100");
   await page.fill("#entryPrice", "150");
-  await page.fill("#exitPrice", "152.5");
-  await page.fill("#fees", "1.2");
   await page.fill("#stopPrice", "149");
   await page.fill("#entryAt", `${tradeDate}T09:31`);
+  await page.getByText("More details").click(); // exit, fees and notes live behind the fold
+  await page.fill("#exitPrice", "152.5");
+  await page.fill("#fees", "1.2");
   await page.fill("#exitAt", `${tradeDate}T10:05`);
   await page.fill("#notes", "Gap and go on **strong** volume.\n\n- entry at VWAP reclaim\n- exit into resistance");
   await expect(page.getByText("+$248.80")).toBeVisible(); // live preview
@@ -273,6 +274,29 @@ test("a rule-breaking trade needs a justification and lands in the ledger", asyn
   const row = page.locator("li", { hasText: `Stop required ${stamp}` });
   await row.getByRole("button", { name: "Delete" }).click();
   await expect(row).toHaveCount(0);
+});
+
+test("installable app assets and two-tap capture", async () => {
+  const manifest = await page.request.get("/manifest.webmanifest");
+  expect(manifest.status()).toBe(200);
+  const json = (await manifest.json()) as { share_target?: { action: string }; shortcuts?: unknown[] };
+  expect(json.share_target?.action).toBe("/share-target");
+  expect(json.shortcuts).toHaveLength(3);
+  expect((await page.request.get("/sw.js")).status()).toBe(200);
+  expect((await page.request.get("/icons/maskable-512.png")).status()).toBe(200);
+  expect((await page.request.get("/offline")).status()).toBe(200); // reachable without a session
+  const shareAnon = await page.request.post("/share-target", { multipart: { text: "hello" }, maxRedirects: 0 });
+  expect([303, 307]).toContain(shareAnon.status()); // the proxy bounces it before the route does
+  expect(shareAnon.headers()["location"]).toContain("/login");
+
+  // The form is prefilled from the last trade, the stop is up front and details are folded away.
+  await page.goto("/trades/new");
+  await expect(page.locator("#symbol")).toHaveValue(`${manualSymbol}X`);
+  await expect(page.locator("#stopPrice")).toBeVisible();
+  await expect(page.locator("#notes")).toBeHidden();
+  await page.getByText("More details").click();
+  await expect(page.locator("#notes")).toBeVisible();
+  await shot("19-quick-capture");
 });
 
 test("delete this run's trades through the UI", async () => {

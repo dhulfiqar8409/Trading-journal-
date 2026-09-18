@@ -21,7 +21,7 @@ export function RangeSelector({ range, current }: { range: ResolvedRange; curren
               key={p.key}
               href={`/${withParams(current, { range: p.key, from: null, to: null })}`}
               aria-current={active ? "true" : undefined}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium ${active ? "bg-surface-3 text-ink" : "text-muted hover:text-ink"}`}
+              className={`pressable rounded-md px-3 py-1.5 text-sm font-medium ${active ? "bg-signature-soft text-ink" : "text-muted hover:text-ink"}`}
             >
               {p.label}
             </Link>
@@ -30,7 +30,7 @@ export function RangeSelector({ range, current }: { range: ResolvedRange; curren
       </div>
       <details className="relative" open={range.key === "custom"}>
         <summary
-          className={`btn btn-sm cursor-pointer list-none ${range.key === "custom" ? "border-accent text-ink" : ""}`}
+          className={`btn btn-sm cursor-pointer list-none ${range.key === "custom" ? "border-signature text-ink" : ""}`}
         >
           Custom
         </summary>

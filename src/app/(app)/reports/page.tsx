@@ -56,7 +56,7 @@ export default async function ReportsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Reports</h1>
+        <h1 className="page-title">Reports</h1>
         <p className="mt-1 text-sm text-muted">Process first: how well the rules were followed and what breaking them cost.</p>
       </div>
 

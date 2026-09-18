@@ -16,7 +16,7 @@ export function StatTile({
   return (
     <div className="card flex min-w-0 flex-col justify-between p-4">
       <p className="text-xs text-ink-2">{label}</p>
-      <p className={`mt-1 truncate text-xl font-semibold leading-none sm:text-2xl ${color}`}>{value}</p>
+      <p className={`figure mt-1 truncate text-xl leading-none sm:text-2xl ${color}`}>{value}</p>
       <p className="mt-2 text-xs text-muted">{sub ?? "\u00a0"}</p>
     </div>
   );

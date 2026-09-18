@@ -25,7 +25,7 @@ export default async function RulesPage({ searchParams }: { searchParams: Promis
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Rules</h1>
+        <h1 className="page-title">Rules</h1>
         <p className="mt-1 text-sm text-muted">
           Deterministic rules are checked automatically on every trade; custom rules are ticked by hand. Breaking one needs a one-line
           justification, which lands in the Tilt Ledger.

@@ -13,6 +13,11 @@
   --color-accent: #3987e5;
   --color-accent-strong: #5aa0f0;
   --color-accent-soft: rgba(57, 135, 229, 0.14);
+  /* The signature: a deep indigo-violet glow, used sparingly for focus and highlights. */
+  --color-signature: #8b83f5;
+  --color-signature-deep: #5b5bd6;
+  --color-signature-soft: rgba(139, 131, 245, 0.14);
+  --color-signature-glow: rgba(110, 99, 232, 0.32);
   --color-profit: #2ec39a;
   --color-profit-mark: #12a884;
   --color-profit-soft: rgba(18, 168, 132, 0.16);
@@ -21,7 +26,11 @@
   --color-loss-soft: rgba(234, 90, 58, 0.16);
   --color-warn: #e0a534;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: var(--font-display-loaded), Georgia, "Times New Roman", serif;
+  --font-numeric: var(--font-numeric-loaded), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-mono: var(--font-numeric-loaded), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --shadow-card: 0 1px 0 0 rgba(255, 255, 255, 0.035) inset, 0 12px 32px -20px rgba(0, 0, 0, 0.7);
+  --shadow-raised: 0 1px 0 0 rgba(255, 255, 255, 0.05) inset, 0 18px 40px -20px rgba(0, 0, 0, 0.8);
 }
 
 html {
@@ -30,18 +39,49 @@ html {
 }
 
 body {
-  background: var(--color-canvas);
+  background:
+    radial-gradient(900px 500px at 15% -10%, rgba(110, 99, 232, 0.12), transparent 60%),
+    var(--color-canvas);
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-tap-highlight-color: transparent;
 }
 
+::selection {
+  background: rgba(139, 131, 245, 0.35);
+}
+
 @layer components {
   .card {
     @apply rounded-xl border border-line bg-surface;
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 45%);
+    box-shadow: var(--shadow-card);
+  }
+  .card-raised {
+    @apply bg-surface-2;
+    box-shadow: var(--shadow-raised);
   }
   .card-pad {
     @apply p-4 sm:p-5;
+  }
+  /* The one glowing surface: the hero card. */
+  .hero-card {
+    position: relative;
+    overflow: hidden;
+    background-image:
+      radial-gradient(520px 220px at 0% 0%, var(--color-signature-glow), transparent 70%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 45%);
+    border-color: rgba(139, 131, 245, 0.28);
+  }
+  .page-title {
+    @apply font-display text-3xl leading-none tracking-tight text-ink sm:text-4xl;
+  }
+  .page-title em {
+    @apply not-italic text-signature;
+    font-style: italic;
+  }
+  .wordmark {
+    @apply font-display text-xl leading-none tracking-tight;
   }
   .label {
     @apply mb-1 block text-xs font-medium tracking-wide text-ink-2;
@@ -51,7 +91,7 @@ body {
   }
   .input {
     @apply block w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm text-ink placeholder:text-muted;
-    @apply focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30;
+    @apply transition-colors focus:border-signature focus:outline-none focus:ring-2 focus:ring-signature/30;
     @apply disabled:opacity-60;
   }
   .input-error {
@@ -59,11 +99,13 @@ body {
   }
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-surface-2 px-3.5 py-2 text-sm font-medium text-ink;
-    @apply transition-colors hover:bg-surface-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40;
-    @apply disabled:cursor-not-allowed disabled:opacity-60;
+    @apply transition-[background-color,border-color,transform,box-shadow] duration-150 hover:bg-surface-3 active:scale-[0.97];
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-signature/50;
+    @apply disabled:cursor-not-allowed disabled:opacity-60 disabled:active:scale-100;
   }
   .btn-primary {
-    @apply border-accent bg-accent text-white hover:border-accent-strong hover:bg-accent-strong;
+    @apply border-signature-deep bg-signature-deep text-white hover:border-signature hover:bg-signature;
+    box-shadow: 0 8px 24px -12px var(--color-signature-glow);
   }
   .btn-danger {
     @apply border-loss-mark/50 text-loss hover:bg-loss-soft;
@@ -73,6 +115,13 @@ body {
   }
   .badge {
     @apply inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-xs font-medium text-ink-2;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-ink-2 transition-colors;
+    @apply peer-checked:border-signature peer-checked:bg-signature-soft peer-checked:text-ink peer-focus-visible:ring-2 peer-focus-visible:ring-signature/40;
+  }
+  .pressable {
+    @apply transition-transform duration-150 active:scale-[0.985];
   }
   .table {
     @apply w-full border-collapse text-sm;
@@ -87,7 +136,28 @@ body {
     @apply border-b-0;
   }
   .num {
+    font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .figure {
+    font-family: var(--font-numeric);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .skeleton {
+    @apply rounded-md bg-surface-3;
+    background-image: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.06) 50%, rgba(255, 255, 255, 0) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
   }
   .prose-notes :is(p, ul, ol, pre, blockquote, h1, h2, h3, h4, table) {
     @apply mb-3 last:mb-0;
@@ -133,5 +203,15 @@ body {
   }
   .prose-notes hr {
     @apply my-4 border-line;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+  .btn,
+  .pressable {
+    transition: none;
   }
 }

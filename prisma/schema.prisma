@@ -58,6 +58,11 @@ enum RuleEventStatus {
   OVERRIDDEN
 }
 
+enum ShareKind {
+  TRADE
+  WEEK
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -72,6 +77,9 @@ model User {
   tags     Tag[]
   rules    Rule[]
   days     Day[]
+  pendingUploads PendingUpload[]
+  importPresets  ImportPreset[]
+  shareLinks     ShareLink[]
 }
 
 model Account {
@@ -217,4 +225,51 @@ model Day {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, date])
+}
+
+/** A screenshot shared from the phone before its trade exists. */
+model PendingUpload {
+  id         String   @id @default(cuid())
+  userId     String
+  filename   String
+  storedName String   @unique
+  mimeType   String
+  size       Int
+  note       String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/** A saved CSV column mapping for one broker export format. */
+model ImportPreset {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  mapping   Json
+  options   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+}
+
+/** A revocable read-only link to one trade or one week. */
+model ShareLink {
+  id          String    @id @default(cuid())
+  userId      String
+  kind        ShareKind
+  targetId    String
+  token       String    @unique
+  hideDollars Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

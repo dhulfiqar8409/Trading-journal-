@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRollUp } from "@/components/roll-up";
 import { formatMoney, formatR, pnlClass } from "@/lib/format";
 
 type Numberish = number | string | null | undefined;
@@ -14,19 +15,23 @@ interface Props {
   /** Text shown in R mode when the trade has no stop. */
   noStopLabel?: string;
   signed?: boolean;
+  /** Roll the figure up from zero when it first appears (hero figures only). */
+  animate?: boolean;
 }
 
 /**
  * A P&L figure in the owner's preferred unit; tapping it flips to the other
  * unit. R needs a stop: without one the primary unit is "no stop".
  */
-export function PnlFigure({ pnl, r, currency = "USD", mode, className = "", noStopLabel = "no stop", signed = true }: Props) {
+export function PnlFigure({ pnl, r, currency = "USD", mode, className = "", noStopLabel = "no stop", signed = true, animate = false }: Props) {
   const [flipped, setFlipped] = useState(false);
+  const progress = useRollUp(animate);
   const hasR = r !== null && r !== undefined && r !== "";
   const hasPnl = pnl !== null && pnl !== undefined && pnl !== "";
   const showR = (mode === "R") !== flipped;
-  const money = formatMoney(pnl, { currency, signed });
-  const rText = hasR ? formatR(r) : noStopLabel;
+  const scale = (v: Numberish) => (progress >= 1 || v === null || v === undefined || v === "" ? v : Number(v) * progress);
+  const money = formatMoney(scale(pnl), { currency, signed });
+  const rText = hasR ? formatR(scale(r)) : noStopLabel;
   const primary = showR ? rText : money;
   const secondary = showR ? money : rText;
   const tone = showR && !hasR ? "text-muted" : pnlClass(showR ? (hasR ? r : pnl) : pnl);

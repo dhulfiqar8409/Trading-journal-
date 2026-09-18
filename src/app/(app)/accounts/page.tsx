@@ -14,7 +14,7 @@ export default async function AccountsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Accounts</h1>
+        <h1 className="page-title">Accounts</h1>
         <p className="mt-1 text-sm text-muted">One per broker account or strategy bucket. New trades default to the default account.</p>
       </div>
       <section className="card card-pad">

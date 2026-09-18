@@ -11,7 +11,7 @@ export default async function SettingsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+        <h1 className="page-title">Settings</h1>
         <p className="mt-1 text-sm text-muted">Signed in as {user.email}.</p>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">

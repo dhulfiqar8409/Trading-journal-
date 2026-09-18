@@ -35,7 +35,7 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{data.isToday ? "Today" : formatDateKey(data.dateKey)}</h1>
+          <h1 className="page-title">{data.isToday ? "Today" : formatDateKey(data.dateKey)}</h1>
           <p className="mt-0.5 text-sm text-muted">
             {data.isToday ? formatDateKey(data.dateKey) : "Past day"} · {user.timeZone.replace(/_/g, " ")}
           </p>

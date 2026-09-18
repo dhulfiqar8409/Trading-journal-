@@ -9,6 +9,7 @@ import { PnlFigure } from "@/components/figure";
 import { StatTile } from "@/components/kpi";
 import { Pnl, SideBadge, StatusBadge } from "@/components/pnl";
 import { RangeSelector } from "@/components/range-selector";
+import { RollUp } from "@/components/roll-up";
 import { StreakCard } from "@/components/streak-card";
 import { requireUser } from "@/lib/auth";
 import { formatDateKey, formatMoney, formatPercent, formatR, formatRatio, formatShortDate } from "@/lib/format";
@@ -35,14 +36,14 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
+        <h1 className="page-title">Dashboard</h1>
         <RangeSelector range={range} current={raw} />
       </div>
 
-      <section className="card card-pad flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between" aria-label="Net P&L">
+      <section className="card hero-card card-pad flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between" aria-label="Net P&L">
         <div>
           <p className="text-xs text-ink-2">{mode === "R" ? "Net R" : "Net P&L"}</p>
-          <PnlFigure pnl={s.netPnl} r={s.rTradeCount ? s.netR : null} currency={currency} mode={mode} className="mt-1 text-4xl font-semibold leading-none sm:text-5xl" noStopLabel="no stops yet" />
+          <PnlFigure pnl={s.netPnl} r={s.rTradeCount ? s.netR : null} currency={currency} mode={mode} className="figure mt-1 text-4xl leading-none sm:text-5xl" noStopLabel="no stops yet" animate />
           <p className="mt-2 text-xs text-muted">
             {range.label} · {s.tradeCount} closed trade{s.tradeCount === 1 ? "" : "s"}
             {s.openCount ? ` · ${s.openCount} open` : ""}
@@ -148,7 +149,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           ) : (
             <>
               <div className="flex items-end gap-4">
-                <p className="text-5xl font-semibold leading-none">{data.edge.score}</p>
+                <p className="figure text-5xl leading-none">
+                  <RollUp value={data.edge.score ?? 0} />
+                </p>
                 <p className="pb-1 text-xs text-muted">
                   out of 100 across six factors
                   <br />
