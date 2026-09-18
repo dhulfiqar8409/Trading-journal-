@@ -1,0 +1,29 @@
+[Unit]
+Description=Darkpools trading journal
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/darkpools/current
+EnvironmentFile=/var/www/darkpools/shared/.env
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3300
+Environment=NODE_OPTIONS=--max-old-space-size=256
+ExecStart=/usr/bin/node /var/www/darkpools/current/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+MemoryHigh=380M
+MemoryMax=450M
+
+[Install]
+WantedBy=multi-user.target

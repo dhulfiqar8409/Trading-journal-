@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for a new Darkpools build every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=45s
+
+[Install]
+WantedBy=timers.target

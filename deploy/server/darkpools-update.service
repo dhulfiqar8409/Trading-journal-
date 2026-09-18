@@ -1,0 +1,10 @@
+[Unit]
+Description=Darkpools: deploy the newest published build if there is one
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/darkpools-update
+Nice=10
+IOSchedulingClass=idle
