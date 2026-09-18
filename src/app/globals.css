@@ -1,26 +1,137 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-canvas: #0b0d12;
+  --color-surface: #12161d;
+  --color-surface-2: #181d26;
+  --color-surface-3: #1f2530;
+  --color-line: #232a35;
+  --color-line-strong: #2f3846;
+  --color-ink: #eef1f5;
+  --color-ink-2: #aeb6c3;
+  --color-muted: #7b8595;
+  --color-accent: #3987e5;
+  --color-accent-strong: #5aa0f0;
+  --color-accent-soft: rgba(57, 135, 229, 0.14);
+  --color-profit: #2ec39a;
+  --color-profit-mark: #12a884;
+  --color-profit-soft: rgba(18, 168, 132, 0.16);
+  --color-loss: #f3785a;
+  --color-loss-mark: #ea5a3a;
+  --color-loss-soft: rgba(234, 90, 58, 0.16);
+  --color-warn: #e0a534;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: dark;
+  background: var(--color-canvas);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface;
+  }
+  .card-pad {
+    @apply p-4 sm:p-5;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium tracking-wide text-ink-2;
+  }
+  .hint {
+    @apply mt-1 text-xs text-muted;
+  }
+  .input {
+    @apply block w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm text-ink placeholder:text-muted;
+    @apply focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30;
+    @apply disabled:opacity-60;
+  }
+  .input-error {
+    @apply border-loss-mark focus:border-loss-mark focus:ring-loss-mark/30;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-surface-2 px-3.5 py-2 text-sm font-medium text-ink;
+    @apply transition-colors hover:bg-surface-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40;
+    @apply disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply border-accent bg-accent text-white hover:border-accent-strong hover:bg-accent-strong;
+  }
+  .btn-danger {
+    @apply border-loss-mark/50 text-loss hover:bg-loss-soft;
+  }
+  .btn-sm {
+    @apply px-2.5 py-1.5 text-xs;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-xs font-medium text-ink-2;
+  }
+  .table {
+    @apply w-full border-collapse text-sm;
+  }
+  .table th {
+    @apply border-b border-line px-3 py-2 text-left text-xs font-medium tracking-wide text-muted;
+  }
+  .table td {
+    @apply border-b border-line px-3 py-2 align-middle text-ink;
+  }
+  .table tr:last-child td {
+    @apply border-b-0;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .prose-notes :is(p, ul, ol, pre, blockquote, h1, h2, h3, h4, table) {
+    @apply mb-3 last:mb-0;
+  }
+  .prose-notes :is(h1, h2, h3, h4) {
+    @apply font-semibold text-ink;
+  }
+  .prose-notes h1 {
+    @apply text-xl;
+  }
+  .prose-notes h2 {
+    @apply text-lg;
+  }
+  .prose-notes h3 {
+    @apply text-base;
+  }
+  .prose-notes ul {
+    @apply list-disc pl-5;
+  }
+  .prose-notes ol {
+    @apply list-decimal pl-5;
+  }
+  .prose-notes a {
+    @apply text-accent underline;
+  }
+  .prose-notes code {
+    @apply rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.85em];
+  }
+  .prose-notes pre {
+    @apply overflow-x-auto rounded-lg bg-surface-2 p-3 text-xs;
+  }
+  .prose-notes pre code {
+    @apply bg-transparent p-0;
+  }
+  .prose-notes blockquote {
+    @apply border-l-2 border-line-strong pl-3 text-ink-2;
+  }
+  .prose-notes table {
+    @apply w-full text-sm;
+  }
+  .prose-notes :is(th, td) {
+    @apply border border-line px-2 py-1 text-left;
+  }
+  .prose-notes hr {
+    @apply my-4 border-line;
+  }
 }

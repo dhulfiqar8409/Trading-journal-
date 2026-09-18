@@ -1,0 +1,44 @@
+import Link from "next/link";
+import { createTradeAction } from "@/actions/trades";
+import { TradeForm } from "@/components/trade-form";
+import { requireUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { serializeTag } from "@/lib/serialize";
+import { toDateTimeLocalValue } from "@/lib/tz";
+
+export const metadata = { title: "New trade" };
+
+export default async function NewTradePage() {
+  const user = await requireUser();
+  const [accounts, tags] = await Promise.all([
+    db.account.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] }),
+    db.tag.findMany({ where: { userId: user.id }, orderBy: [{ kind: "asc" }, { name: "asc" }] }),
+  ]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <Link href="/trades" className="text-sm text-muted hover:text-ink">
+          ← Trades
+        </Link>
+        <h1 className="mt-1 text-xl font-semibold tracking-tight">New trade</h1>
+      </div>
+      {accounts.length === 0 ? (
+        <div className="card card-pad text-sm text-muted">
+          Create an account first under <Link href="/accounts" className="text-accent underline">Accounts</Link>.
+        </div>
+      ) : (
+        <div className="card card-pad">
+          <TradeForm
+            action={createTradeAction}
+            accounts={accounts.map((a) => ({ id: a.id, name: a.name, currency: a.currency, isDefault: a.isDefault }))}
+            tags={tags.map(serializeTag)}
+            timeZone={user.timeZone}
+            defaultEntryAt={toDateTimeLocalValue(new Date(), user.timeZone)}
+            submitLabel="Save trade"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
