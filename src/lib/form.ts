@@ -1,6 +1,14 @@
 import type { ZodError } from "zod";
 
-export type ActionResult = { ok: true; message?: string } | { ok: false; error: string; fieldErrors?: Record<string, string> };
+export interface BrokenRuleInfo {
+  ruleId: string;
+  title: string;
+  detail: string;
+}
+
+export type ActionResult =
+  | { ok: true; message?: string }
+  | { ok: false; error: string; fieldErrors?: Record<string, string>; brokenRules?: BrokenRuleInfo[] };
 export type ActionState = ActionResult | null;
 
 /** FormData to a plain object; repeated keys (checkbox groups) become arrays. */
@@ -27,8 +35,8 @@ export function zodErrorToResult(error: ZodError): ActionResult {
   return { ok: false, error: `${where}${first?.message ?? "Invalid input"}`, fieldErrors };
 }
 
-export function failure(error: string, fieldErrors?: Record<string, string>): ActionResult {
-  return { ok: false, error, fieldErrors };
+export function failure(error: string, fieldErrors?: Record<string, string>, brokenRules?: BrokenRuleInfo[]): ActionResult {
+  return { ok: false, error, fieldErrors, brokenRules };
 }
 
 export function success(message?: string): ActionResult {

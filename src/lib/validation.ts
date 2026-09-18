@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Decimal } from "@/lib/decimal";
 import { ASSET_CLASSES, IMPORT_FIELDS } from "@/lib/csv";
+import { RULE_KIND_INFO, RULE_KINDS } from "@/lib/rules";
 import { isValidTimeZone } from "@/lib/tz";
 
 export const SIDES = ["LONG", "SHORT"] as const;
@@ -24,6 +25,13 @@ const positiveDecimal = decimalString.refine((v) => new Decimal(v).greaterThan(0
 const optionalDecimal = z.preprocess(emptyToUndefined, nonNegativeDecimal.optional());
 const optionalText = (max: number) => z.preprocess(emptyToUndefined, z.string().trim().max(max).optional());
 const checkbox = z.preprocess((v) => v === "on" || v === "true" || v === "1" || v === true, z.boolean());
+const idList = z.preprocess((v) => (Array.isArray(v) ? v : typeof v === "string" && v ? [v] : []), z.array(z.string().max(64)).max(50));
+const csvIdList = z.preprocess(
+  (v) => (typeof v === "string" ? v.split(",").map((x) => x.trim()).filter(Boolean) : Array.isArray(v) ? v : []),
+  z.array(z.string().max(64)).max(50),
+);
+const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date");
+const rating5 = z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(5).optional());
 
 export const emailSchema = z.preprocess(
   (v) => (typeof v === "string" ? v.trim().toLowerCase() : v),
@@ -100,9 +108,65 @@ export const tradeSchema = z.object({
   rating: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(5).optional()),
   notes: z.preprocess((v) => (typeof v === "string" ? v : ""), z.string().max(20000, "Notes are too long")),
   mistakes: optionalText(5000),
-  tagIds: z.preprocess((v) => (Array.isArray(v) ? v : typeof v === "string" && v ? [v] : []), z.array(z.string()).max(50)),
+  tagIds: idList,
+  /** One line explaining why a broken rule was accepted. */
+  justification: optionalText(300),
+  /** The break was a deliberate, planned exception rather than a lapse. */
+  overridden: checkbox,
+  /** Ids of the CUSTOM rules shown on the form, and the subset the owner ticked as followed. */
+  customRuleIds: csvIdList,
+  customFollowed: idList,
 });
 export type TradeInput = z.infer<typeof tradeSchema>;
+
+export const ruleSchema = z
+  .object({
+    title: z.string().trim().min(1, "Enter a title").max(80),
+    kind: z.enum(RULE_KINDS),
+    value: z.preprocess(emptyToUndefined, nonNegativeDecimal.optional()),
+    timeValue: z.preprocess(emptyToUndefined, z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:mm").optional()),
+    active: checkbox,
+  })
+  .superRefine((d, ctx) => {
+    const info = RULE_KIND_INFO[d.kind];
+    if (info.parameter === "number" && d.value === undefined) {
+      ctx.addIssue({ code: "custom", path: ["value"], message: "Enter a limit" });
+    }
+    if (info.parameter === "time" && !d.timeValue) {
+      ctx.addIssue({ code: "custom", path: ["timeValue"], message: "Enter a time" });
+    }
+  });
+export type RuleInput = z.infer<typeof ruleSchema>;
+
+export const checkInSchema = z.object({
+  date: dateKeySchema,
+  maxTrades: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).max(1000).optional()),
+  maxLossR: z.preprocess(emptyToUndefined, nonNegativeDecimal.optional()),
+  allowedSetupIds: idList,
+  focusNote: optionalText(500),
+  mood: rating5,
+  focus: rating5,
+  energy: rating5,
+  sleepHours: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(24).optional()),
+});
+export type CheckInInput = z.infer<typeof checkInSchema>;
+
+export const reviewSchema = z.object({
+  date: dateKeySchema,
+  wentRight: optionalText(2000),
+  wentWrong: optionalText(2000),
+  oneChange: optionalText(2000),
+  dayTags: z.preprocess(
+    (v) => (typeof v === "string" ? v.split(",").map((x) => x.trim()).filter(Boolean).slice(0, 20) : []),
+    z.array(z.string().max(40)),
+  ),
+});
+export type ReviewInput = z.infer<typeof reviewSchema>;
+
+export const justificationSchema = z.object({
+  justification: z.string().trim().min(1, "Write one line").max(300),
+  overridden: checkbox,
+});
 
 const dateKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 

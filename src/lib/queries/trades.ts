@@ -16,6 +16,7 @@ export interface TradeListResult {
 const relationInclude = {
   account: { select: { id: true, name: true, currency: true } },
   tags: { orderBy: { name: "asc" as const } },
+  ruleEvents: { include: { rule: { select: { title: true, kind: true } } } },
 };
 
 function orderFor(sort: NonNullable<TradeFilterInput["sort"]>, dir: "asc" | "desc"): Prisma.TradeOrderByWithRelationInput[] {

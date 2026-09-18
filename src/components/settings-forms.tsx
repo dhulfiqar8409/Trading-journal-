@@ -1,14 +1,13 @@
 "use client";
 
-import { useActionState } from "react";
 import { changePasswordAction, updateProfileAction } from "@/actions/auth";
-import { FieldError, FormMessage, SubmitButton, fieldClass } from "@/components/forms";
+import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TimeZoneSelect } from "@/components/timezone-select";
 
 export function ProfileForm({ name, timeZone }: { name: string; timeZone: string }) {
-  const [state, action] = useActionState(updateProfileAction, null);
+  const { state, onSubmit, pending } = useActionForm(updateProfileAction);
   return (
-    <form action={action} className="flex flex-col gap-3">
+    <form onSubmit={onSubmit} className="flex flex-col gap-3">
       <div>
         <label htmlFor="p-name" className="label">
           Name
@@ -26,16 +25,16 @@ export function ProfileForm({ name, timeZone }: { name: string; timeZone: string
       </div>
       <FormMessage state={state} />
       <div>
-        <SubmitButton>Save settings</SubmitButton>
+        <SubmitButton pending={pending}>Save settings</SubmitButton>
       </div>
     </form>
   );
 }
 
 export function PasswordForm() {
-  const [state, action] = useActionState(changePasswordAction, null);
+  const { state, onSubmit, pending } = useActionForm(changePasswordAction);
   return (
-    <form action={action} className="flex flex-col gap-3">
+    <form onSubmit={onSubmit} className="flex flex-col gap-3">
       <div>
         <label htmlFor="cp-current" className="label">
           Current password
@@ -59,7 +58,7 @@ export function PasswordForm() {
       </div>
       <FormMessage state={state} />
       <div>
-        <SubmitButton pendingText="Updating…">Change password</SubmitButton>
+        <SubmitButton pendingText="Updating…" pending={pending}>Change password</SubmitButton>
       </div>
     </form>
   );

@@ -1,9 +1,9 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useState } from "react";
 import { createTagAction, deleteTagAction, updateTagAction } from "@/actions/tags";
 import { ConfirmSubmit } from "@/components/confirm-button";
-import { FieldError, FormMessage, SubmitButton, fieldClass } from "@/components/forms";
+import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TAG_KIND_LABELS, TagChip } from "@/components/tag-chip";
 import type { TagDTO } from "@/lib/serialize";
 import { TAG_KINDS } from "@/lib/validation";
@@ -60,13 +60,13 @@ function TagFields({ state, initial, idPrefix }: { state: Parameters<typeof Fiel
 }
 
 export function NewTagForm() {
-  const [state, action] = useActionState(createTagAction, null);
+  const { state, onSubmit, pending } = useActionForm(createTagAction);
   return (
-    <form action={action} className="flex flex-col gap-2">
+    <form onSubmit={onSubmit} className="flex flex-col gap-2">
       <TagFields state={state} idPrefix="new" />
       <FormMessage state={state} />
       <div>
-        <SubmitButton pendingText="Creating…">Add tag</SubmitButton>
+        <SubmitButton pendingText="Creating…" pending={pending}>Add tag</SubmitButton>
       </div>
     </form>
   );
@@ -74,17 +74,17 @@ export function NewTagForm() {
 
 export function TagRow({ tag, tradeCount }: { tag: TagDTO; tradeCount: number }) {
   const [editing, setEditing] = useState(false);
-  const [state, action] = useActionState(updateTagAction.bind(null, tag.id), null);
+  const { state, onSubmit, pending } = useActionForm(updateTagAction.bind(null, tag.id));
   const remove = deleteTagAction.bind(null, tag.id);
 
   if (editing) {
     return (
       <li className="rounded-lg border border-line bg-canvas p-3">
-        <form action={action} className="flex flex-col gap-2">
+        <form onSubmit={onSubmit} className="flex flex-col gap-2">
           <TagFields state={state} initial={tag} idPrefix={tag.id} />
           <FormMessage state={state} />
           <div className="flex gap-2">
-            <SubmitButton className="btn btn-primary btn-sm">Save</SubmitButton>
+            <SubmitButton className="btn btn-primary btn-sm" pending={pending}>Save</SubmitButton>
             <button type="button" className="btn btn-sm" onClick={() => setEditing(false)}>
               Cancel
             </button>

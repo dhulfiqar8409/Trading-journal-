@@ -1,14 +1,13 @@
 "use client";
 
-import { useActionState } from "react";
 import { setupAction } from "@/actions/auth";
-import { FieldError, FormMessage, SubmitButton, fieldClass } from "@/components/forms";
+import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TimeZoneSelect } from "@/components/timezone-select";
 
 export function SetupForm() {
-  const [state, action] = useActionState(setupAction, null);
+  const { state, onSubmit, pending } = useActionForm(setupAction);
   return (
-    <form action={action} className="flex flex-col gap-4">
+    <form onSubmit={onSubmit} className="flex flex-col gap-4">
       <div>
         <label htmlFor="name" className="label">
           Name
@@ -61,7 +60,7 @@ export function SetupForm() {
         <p className="hint">Trade times are shown and entered in this zone. Change it later in Settings.</p>
       </div>
       <FormMessage state={state} />
-      <SubmitButton pendingText="Creating…">Create account</SubmitButton>
+      <SubmitButton pendingText="Creating…" pending={pending}>Create account</SubmitButton>
     </form>
   );
 }

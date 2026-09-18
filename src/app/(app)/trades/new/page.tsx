@@ -3,16 +3,19 @@ import { createTradeAction } from "@/actions/trades";
 import { TradeForm } from "@/components/trade-form";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { serializeTag } from "@/lib/serialize";
-import { toDateTimeLocalValue } from "@/lib/tz";
+import { loadBudget } from "@/lib/queries/today";
+import { serializeRule, serializeTag } from "@/lib/serialize";
+import { dateKeyInZone, toDateTimeLocalValue } from "@/lib/tz";
 
 export const metadata = { title: "New trade" };
 
 export default async function NewTradePage() {
   const user = await requireUser();
-  const [accounts, tags] = await Promise.all([
+  const [accounts, tags, customRules, budget] = await Promise.all([
     db.account.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] }),
     db.tag.findMany({ where: { userId: user.id }, orderBy: [{ kind: "asc" }, { name: "asc" }] }),
+    db.rule.findMany({ where: { userId: user.id, active: true, kind: "CUSTOM" }, orderBy: { createdAt: "asc" } }),
+    loadBudget(user.id, user.timeZone, dateKeyInZone(new Date(), user.timeZone)),
   ]);
 
   return (
@@ -36,6 +39,9 @@ export default async function NewTradePage() {
             timeZone={user.timeZone}
             defaultEntryAt={toDateTimeLocalValue(new Date(), user.timeZone)}
             submitLabel="Save trade"
+            budget={budget}
+            customRules={customRules.map(serializeRule)}
+            currency={accounts.find((a) => a.isDefault)?.currency ?? accounts[0]?.currency ?? "USD"}
           />
         </div>
       )}

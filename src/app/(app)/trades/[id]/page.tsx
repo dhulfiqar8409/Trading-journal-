@@ -12,7 +12,7 @@ import { db } from "@/lib/db";
 import { formatDateTime, formatDuration, formatMoney, formatNumber, formatPrice, formatRatio } from "@/lib/format";
 import { plannedRewardRisk, riskAmount } from "@/lib/pnl";
 import { getTrade } from "@/lib/queries/trades";
-import { serializeTag, serializeTrade } from "@/lib/serialize";
+import { serializeRule, serializeTag, serializeTrade } from "@/lib/serialize";
 import { toDateTimeLocalValue } from "@/lib/tz";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
@@ -44,9 +44,10 @@ export default async function TradeDetailPage({
   const record = await getTrade(user.id, id);
   if (!record) notFound();
   const trade = serializeTrade(record);
-  const [accounts, tags] = await Promise.all([
+  const [accounts, tags, customRules] = await Promise.all([
     db.account.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] }),
     db.tag.findMany({ where: { userId: user.id }, orderBy: [{ kind: "asc" }, { name: "asc" }] }),
+    db.rule.findMany({ where: { userId: user.id, active: true, kind: "CUSTOM" }, orderBy: { createdAt: "asc" } }),
   ]);
 
   const pnlInput = {
@@ -127,6 +128,23 @@ export default async function TradeDetailPage({
         ) : null}
       </div>
 
+      {trade.ruleEvents.length ? (
+        <section className="card card-pad" aria-label="Rules">
+          <h2 className="mb-2 text-sm font-semibold">Rules</h2>
+          <ul className="flex flex-col gap-1.5 text-sm">
+            {trade.ruleEvents.map((e) => (
+              <li key={e.id} className="flex flex-wrap items-center gap-2">
+                <span className={`badge ${e.status === "BROKEN" ? "border-warn/50 text-warn" : e.status === "OVERRIDDEN" ? "border-accent/40 text-accent-strong" : "text-ink-2"}`}>
+                  {e.status === "FOLLOWED" ? "Followed" : e.status === "BROKEN" ? "Broken" : "Exception"}
+                </span>
+                <span>{e.ruleTitle}</span>
+                {e.justification ? <span className="text-muted">— “{e.justification}”</span> : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="card card-pad">
           <h2 className="mb-2 text-sm font-semibold">Notes</h2>
@@ -176,6 +194,8 @@ export default async function TradeDetailPage({
             initial={trade}
             defaultEntryAt={toDateTimeLocalValue(new Date(), user.timeZone)}
             submitLabel="Save changes"
+            customRules={customRules.map(serializeRule)}
+            currency={trade.currency}
           />
         </div>
       </details>

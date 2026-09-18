@@ -28,6 +28,7 @@ let page: Page;
 test.beforeAll(async ({ browser }) => {
   mkdirSync(shotsDir, { recursive: true });
   page = await browser.newPage();
+  page.on("dialog", (dialog) => dialog.accept()); // confirm() prompts on delete buttons
 });
 
 test.afterAll(async () => {
@@ -73,7 +74,7 @@ test("create a trade through the UI", async () => {
   await expect(page.getByText("+$248.80")).toBeVisible(); // live preview
   await shot("03-new-trade");
   await page.getByRole("button", { name: "Save trade" }).click();
-  await page.waitForURL(/\/trades\/[a-z0-9]+$/);
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
   await expect(page.getByRole("heading", { name: manualSymbol })).toBeVisible();
   await expect(page.getByText("+$248.80").first()).toBeVisible();
   await expect(page.getByText("+2.49R", { exact: true })).toBeVisible();
@@ -88,7 +89,7 @@ test("the trade shows in the list and its detail page opens", async () => {
   await expect(page.getByText("+$248.80").first()).toBeVisible();
   await shot("05-trades-list");
   await link.click();
-  await page.waitForURL(/\/trades\/[a-z0-9]+$/);
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
   await expect(page.getByRole("heading", { name: manualSymbol })).toBeVisible();
 });
 
@@ -152,6 +153,9 @@ test("phone-width layout has no horizontal scroll", async () => {
   for (const [name, url] of [
     ["09-mobile-dashboard", "/?range=all"],
     ["10-mobile-trades", "/trades"],
+    ["16-mobile-today", "/today"],
+    ["17-mobile-rules", "/rules"],
+    ["18-mobile-reports", "/reports"],
   ] as const) {
     await page.goto(url);
     await expect(page.locator("nav[aria-label='Main']").last()).toBeVisible();
@@ -164,7 +168,7 @@ test("phone-width layout has no horizontal scroll", async () => {
   }
   await page.goto(`/trades?symbol=${manualSymbol}`);
   await page.getByRole("link", { name: new RegExp(manualSymbol) }).first().click();
-  await page.waitForURL(/\/trades\/[a-z0-9]+$/);
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
   const widths = await page.evaluate(() => ({
     scroll: document.scrollingElement?.scrollWidth ?? 0,
     client: document.scrollingElement?.clientWidth ?? 0,
@@ -174,15 +178,89 @@ test("phone-width layout has no horizontal scroll", async () => {
   await page.setViewportSize({ width: 1280, height: 900 });
 });
 
+test("Today: check-in drives the plan budget bar", async () => {
+  await page.goto("/today");
+  await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+  // A previous run may have saved a check-in already; the form then sits behind "Edit check-in".
+  const editCheckIn = page.getByText("Edit check-in");
+  if (await editCheckIn.count()) await editCheckIn.click();
+  await page.fill("#ci-maxTrades", "3");
+  await page.fill("#ci-maxLossR", "2");
+  await page.getByRole("radiogroup", { name: "Mood" }).getByText("4").click();
+  await page.fill("#ci-sleep", "7.5");
+  await page.fill("#ci-focusNote", "Only A setups, no chasing.");
+  await page.getByRole("button", { name: /Save check-in|Update check-in/ }).click();
+  const checkIn = page.locator("section[aria-label='Check-in']");
+  await expect(checkIn).toContainText("Saved");
+  await expect(checkIn).toContainText("Max trades 3");
+  const budget = page.locator("section[aria-label='Plan budget']");
+  await expect(budget).toContainText("of 3");
+  await expect(budget).toContainText("of 2.0R");
+  await expect(budget.getByRole("meter", { name: "Trades today" })).toHaveAttribute("aria-valuemax", "3");
+  await expect(page.getByRole("paragraph").filter({ hasText: "Only A setups, no chasing." })).toBeVisible();
+  const editReview = page.getByText("Edit review");
+  if (await editReview.count()) await editReview.click();
+  await page.fill("#rv-right", "Waited for confirmation.");
+  await page.fill("#rv-change", "Size down after two losses.");
+  await page.getByRole("button", { name: /Save review|Update review/ }).click();
+  const review = page.locator("section[aria-label='Review']");
+  await expect(review).toContainText("Waited for confirmation.");
+  await expect(review).toContainText("Size down after two losses.");
+  await shot("13-today");
+});
+
+test("a rule-breaking trade needs a justification and lands in the ledger", async () => {
+  await page.goto("/rules");
+  await page.selectOption("#new-kind", "STOP_REQUIRED");
+  await page.fill("#new-title", `Stop required ${stamp}`);
+  await page.getByRole("button", { name: "Add rule" }).click();
+  await expect(page.getByText("Rule added.")).toBeVisible();
+
+  await page.goto("/trades/new");
+  await expect(page.locator("section[aria-label='Plan budget']")).toBeVisible();
+  await page.fill("#symbol", `${manualSymbol}X`);
+  await page.fill("#quantity", "10");
+  await page.fill("#entryPrice", "50");
+  await page.fill("#entryAt", `${tradeDate}T11:00`);
+  await page.getByRole("button", { name: "Save trade" }).click();
+  const panel = page.locator("section[aria-label='Rule justification']");
+  await expect(panel).toContainText("breaks 1 rule");
+  await expect(panel).toContainText(`Stop required ${stamp}`);
+  await expect(page).toHaveURL(/\/trades\/new$/);
+  await page.fill("#justification", "Scalping the open, mental stop at 49.5");
+  await page.getByRole("button", { name: "Save trade" }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  const rules = page.locator("section[aria-label='Rules']");
+  await expect(rules).toContainText("Broken");
+  await expect(rules).toContainText("Scalping the open, mental stop at 49.5");
+  await shot("14-trade-rule-broken");
+
+  await page.goto(`/today?date=${tradeDate}`);
+  const events = page.locator("section[aria-label='Rule events']");
+  await expect(events).toContainText(`Stop required ${stamp}`);
+  await expect(events).toContainText("Scalping the open, mental stop at 49.5");
+  await expect(page.locator("section[aria-label='Trades']")).toContainText("1 rule broken");
+
+  await page.goto("/reports");
+  await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible();
+  await expect(page.locator("section[aria-label='Tilt ledger']")).toContainText("Scalping the open, mental stop at 49.5");
+  await shot("15-reports");
+
+  // Pause the rule so later runs and the cleanup are not affected by it.
+  await page.goto("/rules");
+  const row = page.locator("li", { hasText: `Stop required ${stamp}` });
+  await row.getByRole("button", { name: "Delete" }).click();
+  await expect(row).toHaveCount(0);
+});
+
 test("delete this run's trades through the UI", async () => {
-  page.on("dialog", (dialog) => dialog.accept());
-  for (const symbol of [manualSymbol, csvSymbol]) {
+  for (const symbol of [`${manualSymbol}X`, manualSymbol, csvSymbol]) {
     for (let i = 0; i < 5; i++) {
       await page.goto(`/trades?symbol=${symbol}`);
       const link = page.locator("table a[href^='/trades/']").first();
       if ((await link.count()) === 0) break;
       await link.click();
-      await page.waitForURL(/\/trades\/[a-z0-9]+$/);
+      await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
       await page.getByRole("button", { name: "Delete trade" }).click();
       await page.waitForURL((url) => url.pathname === "/trades");
     }

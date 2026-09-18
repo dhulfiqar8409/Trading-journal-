@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { createAccountAction, deleteAccountAction, updateAccountAction } from "@/actions/accounts";
-import { FieldError, FormMessage, SubmitButton, fieldClass } from "@/components/forms";
+import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import type { ActionState } from "@/lib/form";
 
 export interface AccountRowData {
@@ -53,13 +53,13 @@ function AccountFields({ state, initial, idPrefix }: { state: ActionState; initi
 }
 
 export function NewAccountForm() {
-  const [state, action] = useActionState(createAccountAction, null);
+  const { state, onSubmit, pending } = useActionForm(createAccountAction);
   return (
-    <form action={action} className="flex flex-col gap-2">
+    <form onSubmit={onSubmit} className="flex flex-col gap-2">
       <AccountFields state={state} idPrefix="new" />
       <FormMessage state={state} />
       <div>
-        <SubmitButton pendingText="Creating…">Add account</SubmitButton>
+        <SubmitButton pendingText="Creating…" pending={pending}>Add account</SubmitButton>
       </div>
     </form>
   );
@@ -67,17 +67,17 @@ export function NewAccountForm() {
 
 export function AccountRow({ account }: { account: AccountRowData }) {
   const [editing, setEditing] = useState(false);
-  const [state, action] = useActionState(updateAccountAction.bind(null, account.id), null);
+  const { state, onSubmit, pending } = useActionForm(updateAccountAction.bind(null, account.id));
   const [deleteState, deleteAction] = useActionState(deleteAccountAction.bind(null, account.id), null);
 
   if (editing) {
     return (
       <li className="rounded-lg border border-line bg-canvas p-3">
-        <form action={action} className="flex flex-col gap-2">
+        <form onSubmit={onSubmit} className="flex flex-col gap-2">
           <AccountFields state={state} initial={account} idPrefix={account.id} />
           <FormMessage state={state} />
           <div className="flex gap-2">
-            <SubmitButton className="btn btn-primary btn-sm">Save</SubmitButton>
+            <SubmitButton className="btn btn-primary btn-sm" pending={pending}>Save</SubmitButton>
             <button type="button" className="btn btn-sm" onClick={() => setEditing(false)}>
               Cancel
             </button>

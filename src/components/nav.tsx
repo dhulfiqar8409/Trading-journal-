@@ -10,7 +10,10 @@ import {
   LogoutIcon,
   MoreIcon,
   PlusIcon,
+  ReportIcon,
+  RuleIcon,
   SettingsIcon,
+  SunIcon,
   TagIcon,
   UploadIcon,
   WalletIcon,
@@ -24,13 +27,16 @@ interface NavItem {
 }
 
 const PRIMARY: NavItem[] = [
+  { href: "/today", label: "Today", icon: SunIcon },
   { href: "/", label: "Dashboard", icon: DashboardIcon, exact: true },
-  { href: "/trades", label: "Trades", icon: ListIcon },
   { href: "/trades/new", label: "New trade", icon: PlusIcon, exact: true },
-  { href: "/import", label: "Import", icon: UploadIcon },
+  { href: "/trades", label: "Trades", icon: ListIcon },
 ];
 
 const SECONDARY: NavItem[] = [
+  { href: "/reports", label: "Reports", icon: ReportIcon },
+  { href: "/rules", label: "Rules", icon: RuleIcon },
+  { href: "/import", label: "Import", icon: UploadIcon },
   { href: "/tags", label: "Tags", icon: TagIcon },
   { href: "/accounts", label: "Accounts", icon: WalletIcon },
   { href: "/settings", label: "Settings", icon: SettingsIcon },

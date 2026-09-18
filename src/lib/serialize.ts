@@ -1,4 +1,4 @@
-import type { Account, Attachment, Tag, Trade } from "@/generated/prisma/client";
+import type { Account, Attachment, Day, Rule, RuleEvent, Tag, Trade } from "@/generated/prisma/client";
 import { toNumber, toPlainString } from "@/lib/decimal";
 
 export interface TagDTO {
@@ -14,6 +14,44 @@ export interface AttachmentDTO {
   mimeType: string;
   size: number;
   createdAt: string;
+}
+
+export interface RuleDTO {
+  id: string;
+  title: string;
+  kind: Rule["kind"];
+  value: string | null;
+  timeValue: string | null;
+  active: boolean;
+  createdAt: string;
+}
+
+export interface RuleEventDTO {
+  id: string;
+  ruleId: string;
+  ruleTitle: string;
+  ruleKind: Rule["kind"];
+  status: RuleEvent["status"];
+  justification: string | null;
+}
+
+export interface DayDTO {
+  id: string;
+  date: string;
+  maxTrades: number | null;
+  maxLossR: string | null;
+  allowedSetupIds: string[];
+  focusNote: string | null;
+  mood: number | null;
+  sleepHours: number | null;
+  focus: number | null;
+  energy: number | null;
+  checkedInAt: string | null;
+  wentRight: string | null;
+  wentWrong: string | null;
+  oneChange: string | null;
+  reviewedAt: string | null;
+  dayTags: string[];
 }
 
 export interface TradeDTO {
@@ -35,6 +73,7 @@ export interface TradeDTO {
   pnl: number | null;
   pnlExact: string | null;
   rMultiple: number | null;
+  plannedRisk: number | null;
   stopPrice: string | null;
   targetPrice: string | null;
   notes: string;
@@ -43,15 +82,63 @@ export interface TradeDTO {
   importHash: string | null;
   tags: TagDTO[];
   attachments: AttachmentDTO[];
+  ruleEvents: RuleEventDTO[];
   createdAt: string;
   updatedAt: string;
 }
+
+export type RuleEventWithRule = RuleEvent & { rule: Pick<Rule, "title" | "kind"> };
 
 export type TradeWithRelations = Trade & {
   account: Pick<Account, "id" | "name" | "currency">;
   tags: Tag[];
   attachments?: Attachment[];
+  ruleEvents?: RuleEventWithRule[];
 };
+
+export function serializeRule(rule: Rule): RuleDTO {
+  return {
+    id: rule.id,
+    title: rule.title,
+    kind: rule.kind,
+    value: toPlainString(rule.value),
+    timeValue: rule.timeValue,
+    active: rule.active,
+    createdAt: rule.createdAt.toISOString(),
+  };
+}
+
+export function serializeRuleEvent(event: RuleEventWithRule): RuleEventDTO {
+  return {
+    id: event.id,
+    ruleId: event.ruleId,
+    ruleTitle: event.rule.title,
+    ruleKind: event.rule.kind,
+    status: event.status,
+    justification: event.justification,
+  };
+}
+
+export function serializeDay(day: Day): DayDTO {
+  return {
+    id: day.id,
+    date: day.date,
+    maxTrades: day.maxTrades,
+    maxLossR: toPlainString(day.maxLossR),
+    allowedSetupIds: day.allowedSetupIds,
+    focusNote: day.focusNote,
+    mood: day.mood,
+    sleepHours: toNumber(day.sleepHours),
+    focus: day.focus,
+    energy: day.energy,
+    checkedInAt: day.checkedInAt ? day.checkedInAt.toISOString() : null,
+    wentRight: day.wentRight,
+    wentWrong: day.wentWrong,
+    oneChange: day.oneChange,
+    reviewedAt: day.reviewedAt ? day.reviewedAt.toISOString() : null,
+    dayTags: day.dayTags,
+  };
+}
 
 export function serializeTag(tag: Tag): TagDTO {
   return { id: tag.id, name: tag.name, kind: tag.kind, color: tag.color };
@@ -82,6 +169,7 @@ export function serializeTrade(trade: TradeWithRelations): TradeDTO {
     pnl: toNumber(trade.pnl),
     pnlExact: toPlainString(trade.pnl),
     rMultiple: toNumber(trade.rMultiple),
+    plannedRisk: toNumber(trade.plannedRisk),
     stopPrice: toPlainString(trade.stopPrice),
     targetPrice: toPlainString(trade.targetPrice),
     notes: trade.notes,
@@ -90,6 +178,7 @@ export function serializeTrade(trade: TradeWithRelations): TradeDTO {
     importHash: trade.importHash,
     tags: trade.tags.map(serializeTag),
     attachments: (trade.attachments ?? []).map(serializeAttachment),
+    ruleEvents: (trade.ruleEvents ?? []).map(serializeRuleEvent),
     createdAt: trade.createdAt.toISOString(),
     updatedAt: trade.updatedAt.toISOString(),
   };

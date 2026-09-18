@@ -1,13 +1,12 @@
 "use client";
 
-import { useActionState } from "react";
 import { loginAction } from "@/actions/auth";
-import { FormMessage, SubmitButton } from "@/components/forms";
+import { FormMessage, SubmitButton, useActionForm } from "@/components/forms";
 
 export function LoginForm({ next }: { next?: string }) {
-  const [state, action] = useActionState(loginAction, null);
+  const { state, onSubmit, pending } = useActionForm(loginAction);
   return (
-    <form action={action} className="flex flex-col gap-4">
+    <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {next ? <input type="hidden" name="next" value={next} /> : null}
       <div>
         <label htmlFor="email" className="label">
@@ -22,7 +21,7 @@ export function LoginForm({ next }: { next?: string }) {
         <input id="password" name="password" type="password" autoComplete="current-password" required className="input" />
       </div>
       <FormMessage state={state} />
-      <SubmitButton pendingText="Signing in…">Sign in</SubmitButton>
+      <SubmitButton pendingText="Signing in…" pending={pending}>Sign in</SubmitButton>
     </form>
   );
 }

@@ -1,18 +1,44 @@
 "use client";
 
+import { startTransition, useActionState, useCallback } from "react";
 import { useFormStatus } from "react-dom";
 import type { ActionState } from "@/lib/form";
+
+type FormAction = (state: ActionState, formData: FormData) => Promise<ActionState>;
+
+/**
+ * Runs a server action from a form's submit event instead of the form's
+ * `action` prop. React resets an uncontrolled form after an `action` prop
+ * finishes, which wipes the fields when validation fails; invoking the action
+ * manually keeps what the owner typed.
+ */
+export function useActionForm(action: FormAction) {
+  const [state, formAction, pending] = useActionState(action, null);
+  const onSubmit = useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const formData = new FormData(event.currentTarget);
+      startTransition(() => formAction(formData));
+    },
+    [formAction],
+  );
+  return { state, onSubmit, pending };
+}
 
 export function SubmitButton({
   children,
   pendingText = "Saving…",
   className = "btn btn-primary",
+  pending: pendingProp,
 }: {
   children: React.ReactNode;
   pendingText?: string;
   className?: string;
+  /** Pass the pending flag from useActionForm; forms that use the action prop can rely on useFormStatus. */
+  pending?: boolean;
 }) {
-  const { pending } = useFormStatus();
+  const status = useFormStatus();
+  const pending = pendingProp ?? status.pending;
   return (
     <button type="submit" className={className} disabled={pending} aria-busy={pending}>
       {pending ? pendingText : children}

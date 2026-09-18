@@ -7,15 +7,76 @@ import { requireUser, type CurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { failure, formToObject, success, zodErrorToResult, type ActionResult, type ActionState } from "@/lib/form";
 import { computeTradeMetrics } from "@/lib/pnl";
+import { evaluateCandidate } from "@/lib/queries/rules";
+import type { RuleTrade } from "@/lib/rules";
 import { fromDateTimeLocalValue } from "@/lib/tz";
 import { deleteUploads } from "@/lib/uploads";
-import { tradeSchema } from "@/lib/validation";
+import { tradeSchema, type TradeInput } from "@/lib/validation";
 
 type TradeWrite = Omit<Prisma.TradeUncheckedCreateInput, "userId" | "id" | "createdAt" | "updatedAt" | "importHash">;
 
-type BuildResult = { ok: true; data: TradeWrite; tagIds: string[] } | { ok: false; result: ActionResult };
+interface RuleEventWrite {
+  ruleId: string;
+  status: "FOLLOWED" | "BROKEN" | "OVERRIDDEN";
+  justification: string | null;
+}
 
-async function buildTradeWrite(user: CurrentUser, formData: FormData): Promise<BuildResult> {
+type BuildResult =
+  | { ok: true; data: TradeWrite; tagIds: string[]; events: RuleEventWrite[] }
+  | { ok: false; result: ActionResult };
+
+/**
+ * Evaluate the owner's rules for the trade being saved. Deterministic rules
+ * use the day's other trades as context; CUSTOM rules come from the form's
+ * checkboxes. A broken rule blocks the save until a justification is given.
+ */
+async function ruleEventsFor(user: CurrentUser, input: TradeInput, data: TradeWrite, tradeId: string | null): Promise<
+  { ok: true; events: RuleEventWrite[] } | { ok: false; result: ActionResult }
+> {
+  const rules = await db.rule.findMany({ where: { userId: user.id, active: true } });
+  if (rules.length === 0) return { ok: true, events: [] };
+  const candidate: RuleTrade = {
+    id: tradeId ?? "__new__",
+    entryAt: data.entryAt as Date,
+    exitAt: (data.exitAt as Date | null) ?? null,
+    status: data.status ?? "OPEN",
+    quantity: String(data.quantity),
+    stopPrice: data.stopPrice === null || data.stopPrice === undefined ? null : String(data.stopPrice),
+    pnl: data.pnl === null || data.pnl === undefined ? null : String(data.pnl),
+    rMultiple: data.rMultiple === null || data.rMultiple === undefined ? null : String(data.rMultiple),
+  };
+  const deterministic = await evaluateCandidate(user.id, user.timeZone, candidate, rules, tradeId ?? undefined);
+  const custom = rules
+    .filter((r) => r.kind === "CUSTOM" && input.customRuleIds.includes(r.id))
+    .map((r) => ({
+      ruleId: r.id,
+      title: r.title,
+      status: input.customFollowed.includes(r.id) ? ("FOLLOWED" as const) : ("BROKEN" as const),
+      detail: "checked by hand",
+    }));
+  const all = [...deterministic, ...custom];
+  const broken = all.filter((e) => e.status === "BROKEN");
+  if (broken.length > 0 && !input.justification) {
+    return {
+      ok: false,
+      result: failure(
+        `This trade breaks ${broken.length} rule${broken.length === 1 ? "" : "s"}. Add a one-line justification to save it anyway.`,
+        { justification: "Required when a rule is broken" },
+        broken.map((b) => ({ ruleId: b.ruleId, title: b.title, detail: b.detail })),
+      ),
+    };
+  }
+  return {
+    ok: true,
+    events: all.map((e) => ({
+      ruleId: e.ruleId,
+      status: e.status === "FOLLOWED" ? "FOLLOWED" : input.overridden ? "OVERRIDDEN" : "BROKEN",
+      justification: e.status === "FOLLOWED" ? null : (input.justification ?? null),
+    })),
+  };
+}
+
+async function buildTradeWrite(user: CurrentUser, formData: FormData, tradeId: string | null): Promise<BuildResult> {
   const parsed = tradeSchema.safeParse(formToObject(formData));
   if (!parsed.success) return { ok: false, result: zodErrorToResult(parsed.error) };
   const input = parsed.data;
@@ -55,10 +116,7 @@ async function buildTradeWrite(user: CurrentUser, formData: FormData): Promise<B
     ? await db.tag.findMany({ where: { userId: user.id, id: { in: input.tagIds } }, select: { id: true } })
     : [];
 
-  return {
-    ok: true,
-    tagIds: ownedTags.map((t) => t.id),
-    data: {
+  const data: TradeWrite = {
       accountId: input.accountId,
       symbol: input.symbol,
       assetClass: input.assetClass,
@@ -75,28 +133,40 @@ async function buildTradeWrite(user: CurrentUser, formData: FormData): Promise<B
       stopPrice: input.stopPrice ?? null,
       targetPrice: input.targetPrice ?? null,
       rMultiple: metrics.rMultiple ? metrics.rMultiple.toDecimalPlaces(8).toFixed() : null,
+      plannedRisk: metrics.risk ? metrics.risk.toDecimalPlaces(8).toFixed() : null,
       notes: input.notes,
       rating: input.rating ?? null,
       mistakes: input.mistakes ?? null,
-    },
   };
+
+  const events = await ruleEventsFor(user, input, data, tradeId);
+  if (!events.ok) return { ok: false, result: events.result };
+
+  return { ok: true, tagIds: ownedTags.map((t) => t.id), data, events: events.events };
 }
 
 function revalidateTradeViews(id?: string) {
   revalidatePath("/");
   revalidatePath("/trades");
+  revalidatePath("/today");
+  revalidatePath("/reports");
   if (id) revalidatePath(`/trades/${id}`);
 }
 
 export async function createTradeAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const user = await requireUser();
-  const built = await buildTradeWrite(user, formData);
+  const built = await buildTradeWrite(user, formData, null);
   if (!built.ok) return built.result;
 
   let id: string;
   try {
     const trade = await db.trade.create({
-      data: { ...built.data, userId: user.id, tags: { connect: built.tagIds.map((tagId) => ({ id: tagId })) } },
+      data: {
+        ...built.data,
+        userId: user.id,
+        tags: { connect: built.tagIds.map((tagId) => ({ id: tagId })) },
+        ruleEvents: { create: built.events },
+      },
       select: { id: true },
     });
     id = trade.id;
@@ -113,13 +183,19 @@ export async function updateTradeAction(tradeId: string, _prev: ActionState, for
   const existing = await db.trade.findFirst({ where: { id: tradeId, userId: user.id }, select: { id: true } });
   if (!existing) return failure("Trade not found.");
 
-  const built = await buildTradeWrite(user, formData);
+  const built = await buildTradeWrite(user, formData, tradeId);
   if (!built.ok) return built.result;
 
   try {
-    await db.trade.update({
-      where: { id: tradeId },
-      data: { ...built.data, tags: { set: built.tagIds.map((tagId) => ({ id: tagId })) } },
+    await db.$transaction(async (tx) => {
+      await tx.trade.update({
+        where: { id: tradeId },
+        data: { ...built.data, tags: { set: built.tagIds.map((tagId) => ({ id: tagId })) } },
+      });
+      await tx.ruleEvent.deleteMany({ where: { tradeId } });
+      if (built.events.length) {
+        await tx.ruleEvent.createMany({ data: built.events.map((e) => ({ ...e, tradeId })) });
+      }
     });
   } catch (error) {
     console.error("update trade failed", error);

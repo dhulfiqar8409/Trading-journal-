@@ -1,13 +1,15 @@
 "use client";
 
-import { useActionState, useMemo, useState } from "react";
-import { FieldError, FormMessage, SubmitButton, fieldClass } from "@/components/forms";
+import { useMemo, useState } from "react";
+import { BudgetBars } from "@/components/budget-bar";
+import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TAG_KIND_LABELS } from "@/components/tag-chip";
+import type { BudgetDTO } from "@/lib/queries/today";
 import { ASSET_CLASSES } from "@/lib/csv";
 import { formatMoney, formatR } from "@/lib/format";
 import type { ActionState } from "@/lib/form";
 import { computeTradeMetrics, type Side } from "@/lib/pnl";
-import type { TagDTO, TradeDTO } from "@/lib/serialize";
+import type { RuleDTO, TagDTO, TradeDTO } from "@/lib/serialize";
 import { toDateTimeLocalValue } from "@/lib/tz";
 
 export interface AccountOption {
@@ -26,6 +28,11 @@ interface TradeFormProps {
   /** datetime-local value used for new trades. */
   defaultEntryAt: string;
   submitLabel: string;
+  /** Today's plan budget, shown above the form. */
+  budget?: BudgetDTO | null;
+  /** Active CUSTOM rules, ticked by hand. */
+  customRules?: RuleDTO[];
+  currency?: string;
 }
 
 const ASSET_LABELS: Record<(typeof ASSET_CLASSES)[number], string> = {
@@ -71,8 +78,27 @@ function previewFrom(form: HTMLFormElement): Preview | null {
   }
 }
 
-export function TradeForm({ action, accounts, tags, timeZone, initial, defaultEntryAt, submitLabel }: TradeFormProps) {
-  const [state, formAction] = useActionState(action, null);
+export function TradeForm({
+  action,
+  accounts,
+  tags,
+  timeZone,
+  initial,
+  defaultEntryAt,
+  submitLabel,
+  budget = null,
+  customRules = [],
+  currency: budgetCurrency = "USD",
+}: TradeFormProps) {
+  const { state, onSubmit, pending } = useActionForm(action);
+  const brokenFromState = state && !state.ok ? (state.brokenRules ?? []) : [];
+  const brokenInitial = (initial?.ruleEvents ?? []).filter((e) => e.status !== "FOLLOWED");
+  const showJustification = brokenFromState.length > 0 || brokenInitial.length > 0;
+  const initialJustification = brokenInitial.find((e) => e.justification)?.justification ?? "";
+  const initialOverridden = brokenInitial.some((e) => e.status === "OVERRIDDEN");
+  const customFollowedInitial = new Set(
+    (initial?.ruleEvents ?? []).filter((e) => e.ruleKind === "CUSTOM" && e.status === "FOLLOWED").map((e) => e.ruleId),
+  );
   const [preview, setPreview] = useState<Preview | null>(() =>
     initial ? { status: initial.status, pnl: initial.pnlExact, r: initial.rMultiple === null ? null : String(initial.rMultiple) } : null,
   );
@@ -90,11 +116,17 @@ export function TradeForm({ action, accounts, tags, timeZone, initial, defaultEn
 
   return (
     <form
-      action={formAction}
+      onSubmit={onSubmit}
       onChange={(e) => setPreview(previewFrom(e.currentTarget))}
       className="flex flex-col gap-6"
       noValidate={false}
     >
+      {budget ? (
+        <section className="rounded-lg border border-line bg-canvas p-3" aria-label="Plan budget">
+          <BudgetBars budget={budget} currency={budgetCurrency} />
+        </section>
+      ) : null}
+
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <div className="col-span-2 sm:col-span-1">
           <label htmlFor="accountId" className="label">
@@ -350,9 +382,54 @@ export function TradeForm({ action, accounts, tags, timeZone, initial, defaultEn
         </div>
       </section>
 
+      {customRules.length > 0 ? (
+        <section>
+          <span className="label">Rules checked by hand</span>
+          <input type="hidden" name="customRuleIds" value={customRules.map((r) => r.id).join(",")} />
+          <div className="flex flex-col gap-1.5">
+            {customRules.map((rule) => (
+              <label key={rule.id} className="flex items-center gap-2 text-sm text-ink-2">
+                <input type="checkbox" name="customFollowed" value={rule.id} defaultChecked={initial ? customFollowedInitial.has(rule.id) : true} />
+                {rule.title}
+              </label>
+            ))}
+          </div>
+          <p className="hint">Untick a rule you broke on this trade; a justification is then required.</p>
+        </section>
+      ) : null}
+
+      {showJustification ? (
+        <section className="rounded-lg border border-warn/50 bg-surface-2 p-3" aria-label="Rule justification">
+          <p className="text-sm font-semibold text-warn">This trade breaks {brokenFromState.length || brokenInitial.length} rule{(brokenFromState.length || brokenInitial.length) === 1 ? "" : "s"}</p>
+          <ul className="mt-1 list-disc pl-5 text-sm text-ink-2">
+            {(brokenFromState.length ? brokenFromState.map((b) => ({ key: b.ruleId, title: b.title, detail: b.detail })) : brokenInitial.map((e) => ({ key: e.ruleId, title: e.ruleTitle, detail: "" }))).map((b) => (
+              <li key={b.key}>
+                {b.title}
+                {b.detail ? <span className="text-muted"> — {b.detail}</span> : null}
+              </li>
+            ))}
+          </ul>
+          <label htmlFor="justification" className="label mt-3">
+            Justification (one line)
+          </label>
+          <input
+            id="justification"
+            name="justification"
+            maxLength={300}
+            defaultValue={initialJustification}
+            placeholder="Why was this acceptable?"
+            className={fieldClass(state, "justification")}
+          />
+          <FieldError state={state} name="justification" />
+          <label className="mt-2 flex items-center gap-2 text-sm text-ink-2">
+            <input type="checkbox" name="overridden" defaultChecked={initialOverridden} /> Deliberate exception, not a lapse
+          </label>
+        </section>
+      ) : null}
+
       <FormMessage state={state} />
       <div className="flex items-center gap-3">
-        <SubmitButton>{submitLabel}</SubmitButton>
+        <SubmitButton pending={pending}>{submitLabel}</SubmitButton>
       </div>
     </form>
   );
