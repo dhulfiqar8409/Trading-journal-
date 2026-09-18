@@ -16,6 +16,7 @@ log() { echo "[setup] $*"; }
 
 log "1/7 housekeeping"
 apt-get clean
+rm -rf /var/lib/apt/lists/*
 journalctl --vacuum-size=64M >/dev/null 2>&1 || true
 snap list --all 2>/dev/null | awk '/disabled/{print $1, $3}' | while read -r name rev; do
   snap remove "$name" --revision="$rev" >/dev/null 2>&1 || true
@@ -102,7 +103,14 @@ for unit in darkpools.service darkpools-update.service darkpools-update.timer; d
 done
 systemctl daemon-reload
 systemctl enable darkpools.service >/dev/null 2>&1
-/usr/local/bin/darkpools-update --retry
+# Drop extracted builds other than the running one before deploying (disk is small).
+if [ -L "$BASE/current" ]; then
+  for dir in "$BASE"/releases/*/; do
+    [ -d "$dir" ] || continue
+    [ "$(readlink -f "$dir")" = "$(readlink -f "$BASE/current")" ] || rm -rf "$dir"
+  done
+fi
+/usr/local/bin/darkpools-update --retry || true
 systemctl enable --now darkpools-update.timer >/dev/null 2>&1
 
 log "7/7 nginx server block for darkpools.deeapps.net"

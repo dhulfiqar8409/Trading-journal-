@@ -41,8 +41,23 @@ if [ -f "$target/FAILED" ]; then
   exit 0
 fi
 
+# Free disk first: drop every release that is not the running one (a failed deploy has
+# already rolled back by the time we get here), then refuse to download without headroom.
+for dir in "$RELEASES"/*/; do
+  [ -d "$dir" ] || continue
+  [ "$(readlink -f "$dir")" = "$(readlink -f "$CURRENT" 2>/dev/null)" ] && continue
+  [ -f "$dir/FAILED" ] && [ "$(basename "$dir")" != "$short" ] && rm -rf "$dir" && continue
+  rm -rf "$dir"
+done
+rm -rf "$RELEASES/.tmp"
+avail_mb="$(df --output=avail -m "$RELEASES" | tail -1 | tr -d ' ')"
+if [ "$avail_mb" -lt "${MIN_FREE_MB:-700}" ]; then
+  log "only ${avail_mb} MB free under $RELEASES; need ${MIN_FREE_MB:-700} MB to deploy safely"
+  exit 1
+fi
+
 log "new build $short, downloading"
-rm -rf "$target" "$RELEASES/.tmp"
+rm -rf "$target"
 mkdir -p "$RELEASES/.tmp"
 # Layer tars name entries "app/..." (Docker/BuildKit); fall back to "./app/..." just in case.
 if ! { crane export "$IMAGE" - | tar -x -C "$RELEASES/.tmp" --strip-components=1 app; } 2>/dev/null \
