@@ -120,5 +120,5 @@ echo "timer: $(systemctl is-active darkpools-update.timer)"
 echo "health (local): $(curl -fsS --max-time 5 http://127.0.0.1:3300/api/health || echo unhealthy)"
 echo "health (via nginx): $(curl -fsS --max-time 5 --resolve darkpools.deeapps.net:443:127.0.0.1 https://darkpools.deeapps.net/api/health || echo unhealthy)"
 echo
-echo "Create your account with this link (keep it to yourself; it stops working once the account exists):"
+echo "Create the admin account with this link (keep it to yourself; it stops working once the account exists):"
 echo "  https://darkpools.deeapps.net/setup?token=$(grep '^SETUP_TOKEN=' "$BASE/shared/.env" | cut -d= -f2)"
