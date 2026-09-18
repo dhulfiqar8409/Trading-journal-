@@ -1,0 +1,324 @@
+/**
+ * CSV import: column auto-detection and row parsing. Pure and browser-safe so
+ * the same code produces the preview in the browser and the final rows on the
+ * server (which is the source of truth).
+ */
+
+import { Decimal, toDecimal } from "@/lib/decimal";
+import { parseFlexibleDate } from "@/lib/dates";
+import { importHashKey } from "@/lib/import-hash-key";
+import { exitPriceForNetPnl, netPnl, rMultiple, type Side } from "@/lib/pnl";
+
+export const ASSET_CLASSES = ["STOCK", "OPTION", "FUTURES", "FOREX", "CRYPTO"] as const;
+export type AssetClass = (typeof ASSET_CLASSES)[number];
+
+export const IMPORT_FIELDS = [
+  "symbol",
+  "side",
+  "quantity",
+  "entryPrice",
+  "exitPrice",
+  "entryAt",
+  "exitAt",
+  "fees",
+  "pnl",
+  "assetClass",
+  "multiplier",
+  "stopPrice",
+  "targetPrice",
+  "notes",
+] as const;
+export type ImportField = (typeof IMPORT_FIELDS)[number];
+
+export const FIELD_INFO: Record<ImportField, { label: string; required: boolean; hint: string }> = {
+  symbol: { label: "Symbol", required: true, hint: "Ticker or contract, e.g. AAPL, ESZ4" },
+  side: { label: "Side", required: false, hint: "long/short or buy/sell. Defaults to long" },
+  quantity: { label: "Quantity", required: true, hint: "Shares, contracts or units" },
+  entryPrice: { label: "Entry price", required: true, hint: "Average fill price in" },
+  exitPrice: { label: "Exit price", required: false, hint: "Average fill price out. Empty means the trade is still open" },
+  entryAt: { label: "Entry time", required: true, hint: "Date or date-time the position was opened" },
+  exitAt: { label: "Exit time", required: false, hint: "Defaults to the entry time when only an exit price is given" },
+  fees: { label: "Fees", required: false, hint: "Total commissions and fees. Defaults to 0" },
+  pnl: { label: "Net P&L", required: false, hint: "Used to derive the exit price when the file has no exit price column" },
+  assetClass: { label: "Asset class", required: false, hint: "stock, option, futures, forex or crypto" },
+  multiplier: { label: "Multiplier", required: false, hint: "Point value or contract size. Defaults to the value chosen below" },
+  stopPrice: { label: "Stop price", required: false, hint: "Initial stop, used for R-multiples" },
+  targetPrice: { label: "Target price", required: false, hint: "Planned target" },
+  notes: { label: "Notes", required: false, hint: "Free text appended to the trade notes" },
+};
+
+/** Maps each import field to a CSV header. */
+export type ColumnMapping = Partial<Record<ImportField, string>>;
+
+export interface ImportOptions {
+  defaultAssetClass?: AssetClass;
+  defaultMultiplier?: string;
+  dayFirst?: boolean;
+  /** Zone for dates that carry no offset. Defaults to UTC. */
+  timeZone?: string;
+}
+
+export interface ParsedImportRow {
+  symbol: string;
+  side: Side;
+  assetClass: AssetClass;
+  quantity: string;
+  entryPrice: string;
+  exitPrice: string | null;
+  multiplier: string;
+  fees: string;
+  entryAt: Date;
+  exitAt: Date | null;
+  status: "OPEN" | "CLOSED";
+  pnl: string | null;
+  rMultiple: string | null;
+  stopPrice: string | null;
+  targetPrice: string | null;
+  notes: string;
+  /** Canonical identity used for de-duplication. */
+  importHashKey: string;
+}
+
+export type RowResult = { ok: true; row: ParsedImportRow } | { ok: false; error: string };
+
+export function normalizeHeader(header: string): string {
+  return header.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
+}
+
+const SYNONYMS: Record<ImportField, string[]> = {
+  symbol: ["symbol", "ticker", "instrument", "contract", "underlying", "security", "asset", "sym", "market", "pair"],
+  side: ["side", "direction", "position", "longshort", "buysell", "bs", "ls", "action", "tradetype"],
+  quantity: ["quantity", "qty", "size", "shares", "contracts", "units", "lots", "volume", "positionsize", "filledqty", "amount"],
+  entryPrice: ["entryprice", "entry", "openprice", "avgentry", "averageentry", "avgentryprice", "buyprice", "pricein", "openingprice", "entryavg", "costbasis", "open"],
+  exitPrice: ["exitprice", "exit", "closeprice", "avgexit", "averageexit", "avgexitprice", "sellprice", "priceout", "closingprice", "exitavg", "close"],
+  entryAt: ["entrydate", "entrytime", "entrydatetime", "entrytimestamp", "opendate", "opentime", "opendatetime", "opened", "dateopened", "openedat", "entryat", "boughttimestamp", "datetime", "timestamp", "date", "time", "tradedate", "opentimestamp"],
+  exitAt: ["exitdate", "exittime", "exitdatetime", "exittimestamp", "closedate", "closetime", "closedatetime", "closed", "dateclosed", "closedat", "exitat", "soldtimestamp", "closetimestamp"],
+  fees: ["fees", "fee", "commission", "commissions", "comm", "feesandcommissions", "totalfees", "commissionsandfees", "cost"],
+  pnl: ["pnl", "pandl", "pl", "netpnl", "netpandl", "netpl", "profit", "profitloss", "profitandloss", "realizedpnl", "realizedpandl", "realized", "netprofit", "gain", "gainloss", "result", "net", "return"],
+  assetClass: ["assetclass", "assettype", "instrumenttype", "producttype", "product", "securitytype", "class", "type"],
+  multiplier: ["multiplier", "pointvalue", "contractsize", "contractmultiplier", "lotsize", "tickvalue"],
+  stopPrice: ["stopprice", "stop", "stoploss", "sl", "initialstop", "stopprice1"],
+  targetPrice: ["targetprice", "target", "takeprofit", "tp", "profittarget"],
+  notes: ["notes", "note", "comment", "comments", "description", "remarks", "journal", "memo"],
+};
+
+/** Guess which CSV header feeds each import field. Each header is used at most once. */
+export function guessMapping(headers: string[]): ColumnMapping {
+  const mapping: ColumnMapping = {};
+  const used = new Set<string>();
+  const normalized = headers.map((h) => ({ header: h, norm: normalizeHeader(h) }));
+
+  // Exact synonym matches first, in field priority order.
+  for (const field of IMPORT_FIELDS) {
+    for (const synonym of SYNONYMS[field]) {
+      const hit = normalized.find((h) => h.norm === synonym && !used.has(h.header));
+      if (hit) {
+        mapping[field] = hit.header;
+        used.add(hit.header);
+        break;
+      }
+    }
+  }
+  // Then substring matches for whatever is still unmapped (e.g. "entry_price_usd").
+  for (const field of IMPORT_FIELDS) {
+    if (mapping[field]) continue;
+    for (const synonym of SYNONYMS[field]) {
+      if (synonym.length < 4) continue;
+      const hit = normalized.find((h) => h.norm.includes(synonym) && !used.has(h.header));
+      if (hit) {
+        mapping[field] = hit.header;
+        used.add(hit.header);
+        break;
+      }
+    }
+  }
+  return mapping;
+}
+
+export function parseSide(raw: string): Side | null {
+  const v = raw.trim().toLowerCase();
+  if (["long", "buy", "b", "l", "bought", "bot", "bto", "buy to open", "buytoopen", "purchase"].includes(v)) return "LONG";
+  if (["short", "sell", "s", "sh", "sold", "sld", "sto", "sell short", "sellshort", "sell to open", "selltoopen"].includes(v)) return "SHORT";
+  return null;
+}
+
+export function parseAssetClass(raw: string): AssetClass | null {
+  const v = raw.trim().toLowerCase().replace(/[^a-z]/g, "");
+  if (["stock", "stocks", "equity", "equities", "share", "shares", "etf", "stk"].includes(v)) return "STOCK";
+  if (["option", "options", "opt", "call", "put", "calls", "puts"].includes(v)) return "OPTION";
+  if (["future", "futures", "fut", "micro", "index"].includes(v)) return "FUTURES";
+  if (["forex", "fx", "currency", "currencies", "cfd"].includes(v)) return "FOREX";
+  if (["crypto", "cryptocurrency", "cryptocurrencies", "coin", "spot"].includes(v)) return "CRYPTO";
+  return null;
+}
+
+/** Parse a money/number cell like "$1,234.50", "(12.50)", "-12.5" or "1 234,5" into a canonical decimal string. */
+export function parseNumber(raw: string): string | null {
+  let v = raw.trim();
+  if (!v) return null;
+  let negative = false;
+  if (/^\(.*\)$/.test(v)) {
+    negative = true;
+    v = v.slice(1, -1);
+  }
+  v = v.replace(/[$€£¥\s]/g, "").replace(/[A-Za-z]+$/, "");
+  if (v.startsWith("-")) {
+    negative = !negative;
+    v = v.slice(1);
+  } else if (v.startsWith("+")) {
+    v = v.slice(1);
+  }
+  // "1.234,56" (decimal comma) vs "1,234.56" (thousands comma).
+  if (/^\d{1,3}(\.\d{3})+,\d+$/.test(v)) {
+    v = v.replace(/\./g, "").replace(",", ".");
+  } else if (/^\d+,\d{1,2}$/.test(v)) {
+    v = v.replace(",", ".");
+  } else {
+    v = v.replace(/,/g, "");
+  }
+  if (!/^\d*\.?\d+$/.test(v) && !/^\d+\.$/.test(v)) return null;
+  const d = new Decimal(v);
+  return (negative ? d.neg() : d).toFixed();
+}
+
+function cell(record: Record<string, string>, mapping: ColumnMapping, field: ImportField): string | null {
+  const header = mapping[field];
+  if (!header) return null;
+  const value = record[header];
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+export function parseImportRow(record: Record<string, string>, mapping: ColumnMapping, options: ImportOptions = {}): RowResult {
+  const fail = (error: string): RowResult => ({ ok: false, error });
+
+  const symbolRaw = cell(record, mapping, "symbol");
+  if (!symbolRaw) return fail("missing symbol");
+  const symbol = symbolRaw.toUpperCase().slice(0, 32);
+
+  const quantityRaw = cell(record, mapping, "quantity");
+  if (!quantityRaw) return fail("missing quantity");
+  const quantityParsed = parseNumber(quantityRaw);
+  if (quantityParsed === null) return fail(`invalid quantity "${quantityRaw}"`);
+  let quantity = new Decimal(quantityParsed);
+
+  let side: Side | null = null;
+  const sideRaw = cell(record, mapping, "side");
+  if (sideRaw) {
+    side = parseSide(sideRaw);
+    if (!side) return fail(`unrecognised side "${sideRaw}"`);
+  }
+  if (!side) side = quantity.isNegative() ? "SHORT" : "LONG";
+  quantity = quantity.abs();
+  if (quantity.isZero()) return fail("quantity must not be zero");
+
+  const entryRaw = cell(record, mapping, "entryPrice");
+  if (!entryRaw) return fail("missing entry price");
+  const entryPrice = parseNumber(entryRaw);
+  if (entryPrice === null) return fail(`invalid entry price "${entryRaw}"`);
+
+  const exitRaw = cell(record, mapping, "exitPrice");
+  let exitPrice: string | null = null;
+  if (exitRaw) {
+    exitPrice = parseNumber(exitRaw);
+    if (exitPrice === null) return fail(`invalid exit price "${exitRaw}"`);
+  }
+
+  const dateOptions = { dayFirst: options.dayFirst, timeZone: options.timeZone ?? "UTC" };
+  const entryAtRaw = cell(record, mapping, "entryAt");
+  if (!entryAtRaw) return fail("missing entry time");
+  const entryAt = parseFlexibleDate(entryAtRaw, dateOptions);
+  if (!entryAt) return fail(`invalid entry time "${entryAtRaw}"`);
+
+  const exitAtRaw = cell(record, mapping, "exitAt");
+  let exitAt: Date | null = null;
+  if (exitAtRaw) {
+    exitAt = parseFlexibleDate(exitAtRaw, dateOptions);
+    if (!exitAt) return fail(`invalid exit time "${exitAtRaw}"`);
+  }
+
+  const feesRaw = cell(record, mapping, "fees");
+  let fees = "0";
+  if (feesRaw) {
+    const parsed = parseNumber(feesRaw);
+    if (parsed === null) return fail(`invalid fees "${feesRaw}"`);
+    fees = new Decimal(parsed).abs().toFixed();
+  }
+
+  const multiplierRaw = cell(record, mapping, "multiplier");
+  let multiplier = options.defaultMultiplier && options.defaultMultiplier.trim() !== "" ? options.defaultMultiplier.trim() : "1";
+  if (multiplierRaw) {
+    const parsed = parseNumber(multiplierRaw);
+    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(`invalid multiplier "${multiplierRaw}"`);
+    multiplier = parsed;
+  }
+  if (!/^\d*\.?\d+$/.test(multiplier) || new Decimal(multiplier).lessThanOrEqualTo(0)) return fail("default multiplier must be a positive number");
+
+  let assetClass: AssetClass = options.defaultAssetClass ?? "STOCK";
+  const assetRaw = cell(record, mapping, "assetClass");
+  if (assetRaw) {
+    const parsed = parseAssetClass(assetRaw);
+    if (parsed) assetClass = parsed;
+  }
+
+  const parseOptional = (field: ImportField): string | null | undefined => {
+    const raw = cell(record, mapping, field);
+    if (!raw) return null;
+    const parsed = parseNumber(raw);
+    if (parsed === null) return undefined;
+    return parsed;
+  };
+  const stopPrice = parseOptional("stopPrice");
+  if (stopPrice === undefined) return fail(`invalid stop price "${cell(record, mapping, "stopPrice")}"`);
+  const targetPrice = parseOptional("targetPrice");
+  if (targetPrice === undefined) return fail(`invalid target price "${cell(record, mapping, "targetPrice")}"`);
+
+  // Files that only carry a P&L column: derive the exit price so the stored
+  // figures stay consistent with the P&L formula.
+  const pnlRaw = cell(record, mapping, "pnl");
+  if (!exitPrice && pnlRaw) {
+    const parsedPnl = parseNumber(pnlRaw);
+    if (parsedPnl === null) return fail(`invalid P&L "${pnlRaw}"`);
+    const derived = exitPriceForNetPnl({ side, quantity, entryPrice, multiplier, fees }, parsedPnl);
+    if (!derived) return fail("cannot derive exit price from P&L");
+    exitPrice = derived.toFixed();
+  }
+
+  const status = exitPrice !== null ? "CLOSED" : "OPEN";
+  if (status === "CLOSED" && !exitAt) exitAt = entryAt;
+  if (status === "OPEN") exitAt = null;
+  if (exitAt && exitAt.getTime() < entryAt.getTime()) return fail("exit time is before entry time");
+
+  const pnlInput = { side, quantity, entryPrice, exitPrice, multiplier, fees, stopPrice };
+  const pnl = netPnl(pnlInput);
+  const r = rMultiple(pnlInput);
+
+  return {
+    ok: true,
+    row: {
+      symbol,
+      side,
+      assetClass,
+      quantity: quantity.toFixed(),
+      entryPrice,
+      exitPrice,
+      multiplier,
+      fees,
+      entryAt,
+      exitAt,
+      status,
+      pnl: pnl ? pnl.toFixed() : null,
+      rMultiple: r ? r.toFixed() : null,
+      stopPrice,
+      targetPrice,
+      notes: cell(record, mapping, "notes") ?? "",
+      importHashKey: importHashKey({ symbol, side, quantity, entryPrice, entryAt }),
+    },
+  };
+}
+
+/** Canonical decimal string for display in previews. */
+export function formatDecimalString(value: string | null): string {
+  return value === null ? "" : toDecimal(value).toFixed();
+}
