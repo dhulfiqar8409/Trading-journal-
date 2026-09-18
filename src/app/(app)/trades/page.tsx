@@ -1,11 +1,14 @@
 import Link from "next/link";
+import { CloseTrade } from "@/components/close-trade";
 import { Pagination } from "@/components/pagination";
 import { PnlFigure } from "@/components/figure";
 import { RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
 import { TagChip } from "@/components/tag-chip";
+import { closeTarget } from "@/lib/close-target";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { formatDateTime, formatNumber, formatPrice, formatShortDate } from "@/lib/format";
+import { tradeLabel } from "@/lib/options";
 import { listTrades } from "@/lib/queries/trades";
 import { flattenSearchParams, withParams, type SearchParams } from "@/lib/search-params";
 import { serializeTrade } from "@/lib/serialize";
@@ -162,7 +165,7 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
                     <td className="num whitespace-nowrap text-ink-2">{formatDateTime(t.entryAt, user.timeZone)}</td>
                     <td>
                       <Link href={`/trades/${t.id}`} className="font-semibold text-ink hover:text-accent-strong">
-                        {t.symbol}
+                        {tradeLabel(t)}
                       </Link>
                       <span className="ml-2 text-xs text-muted">{t.accountName}</span>
                     </td>
@@ -186,7 +189,10 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
                       </div>
                     </td>
                     <td>
-                      <StatusBadge status={t.status} />
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={t.status} />
+                        {t.status === "OPEN" ? <CloseTrade trade={closeTarget(t, tradeLabel(t))} timeZone={user.timeZone} /> : null}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -196,11 +202,11 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
 
           <ul className="flex flex-col gap-2 md:hidden">
             {trades.map((t) => (
-              <li key={t.id}>
-                <Link href={`/trades/${t.id}`} className="card pressable block p-3 hover:bg-surface-2">
+              <li key={t.id} className="card overflow-hidden">
+                <Link href={`/trades/${t.id}`} className="pressable block p-3 hover:bg-surface-2">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">{t.symbol}</span>
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="font-semibold">{tradeLabel(t)}</span>
                       <SideBadge side={t.side} />
                       {t.status === "OPEN" ? <StatusBadge status={t.status} /> : null}
                     </div>
@@ -221,6 +227,11 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
                     </div>
                   ) : null}
                 </Link>
+                {t.status === "OPEN" ? (
+                  <div className="flex items-center justify-end border-t border-line px-3 py-2">
+                    <CloseTrade trade={closeTarget(t, tradeLabel(t))} timeZone={user.timeZone} />
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>

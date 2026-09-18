@@ -28,6 +28,16 @@ const tradeDateObj = new Date(Date.UTC(2024, 0, 1 + (Math.floor(Date.now() / 100
 const tradeDate = tradeDateObj.toISOString().slice(0, 10);
 const tradeMonthLabel = `${MONTHS[tradeDateObj.getUTCMonth()]} ${tradeDateObj.getUTCFullYear()}`;
 const tradeDayLabel = `${MONTHS[tradeDateObj.getUTCMonth()].slice(0, 3)} ${tradeDateObj.getUTCDate()}, ${tradeDateObj.getUTCFullYear()}`;
+// The day after carries the closing and option trades, so the dashboard figures of each day stay separate.
+const closeDateObj = new Date(tradeDateObj.getTime() + 86_400_000);
+const closeDate = closeDateObj.toISOString().slice(0, 10);
+const expiryObj = new Date(closeDateObj.getTime() + 7 * 86_400_000);
+const expiryKey = expiryObj.toISOString().slice(0, 10);
+const closeSymbol = `${manualSymbol}C`;
+const optionSymbol = `OPT${stamp}`;
+const mobileSymbol = `${manualSymbol}M`;
+const yearSuffix = expiryObj.getUTCFullYear() === new Date().getUTCFullYear() ? "" : ` '${String(expiryObj.getUTCFullYear()).slice(-2)}`;
+const optionLabel = `${optionSymbol} 450C ${MONTHS[expiryObj.getUTCMonth()].slice(0, 3)} ${expiryObj.getUTCDate()}${yearSuffix}`;
 
 let page: Page;
 
@@ -140,6 +150,103 @@ test("dashboard shows the P&L and renders charts", async () => {
   await shot("06-dashboard");
 });
 
+test("close an open trade: part of it from the list, the rest from the detail page", async () => {
+  await page.goto("/trades/new");
+  await page.fill("#symbol", closeSymbol);
+  await page.fill("#quantity", "100");
+  await page.fill("#entryPrice", "50");
+  await page.fill("#stopPrice", "49");
+  await page.fill("#entryAt", `${closeDate}T09:31`);
+  await page.getByRole("button", { name: "Save trade" }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await expect(page.getByText("Open position")).toBeVisible();
+
+  // Forty of the hundred from the list row: the closed part becomes its own row, the rest stays open.
+  await page.goto(`/trades?symbol=${closeSymbol}`);
+  await page.getByRole("button", { name: "Close", exact: true }).first().click();
+  const sheet = page.getByRole("dialog", { name: `Close ${closeSymbol}` });
+  await expect(sheet).toBeVisible();
+  await sheet.locator("#close-quantity").fill("40");
+  await sheet.locator("#close-exitPrice").fill("52");
+  await sheet.locator("#close-exitAt").fill(`${closeDate}T10:00`);
+  await sheet.locator("#close-exitNote").fill("Took some off into strength.");
+  await expect(sheet).toContainText("+$80.00");
+  await shot("27-close-sheet");
+  await sheet.getByRole("button", { name: "Close 40 of 100" }).click();
+  await expect(sheet).toBeHidden();
+  const rows = page.locator("table tbody tr");
+  await expect(rows).toHaveCount(2);
+  const closedRow = rows.filter({ hasText: "Closed" });
+  const openRow = rows.filter({ hasText: "Open" });
+  await expect(closedRow).toContainText("40");
+  await expect(closedRow.getByRole("button", { name: /\+2\.00R, \+\$80\.00/ })).toBeVisible();
+  await expect(openRow).toContainText("60");
+  await expect(openRow.getByRole("button", { name: "Close", exact: true })).toBeVisible();
+
+  // The closed part points back to the original.
+  await closedRow.getByRole("link", { name: closeSymbol, exact: true }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  // The notes render as Markdown and sit in the edit form too, so look at the rendered paragraph.
+  await expect(page.locator("p", { hasText: /Partial close of/ })).toBeVisible();
+  await expect(page.locator("p", { hasText: "Took some off into strength." })).toBeVisible();
+
+  // The remaining sixty from the detail page's primary button.
+  await page.goto(`/trades?symbol=${closeSymbol}&status=OPEN`);
+  await page.getByRole("link", { name: closeSymbol, exact: true }).first().click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await expect(page.locator("p", { hasText: "Closed 40 of 100; 60 still open." })).toBeVisible();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  const rest = page.getByRole("dialog", { name: `Close ${closeSymbol}` });
+  await expect(rest.locator("#close-quantity")).toHaveValue("60");
+  await rest.locator("#close-exitPrice").fill("51");
+  await rest.locator("#close-exitAt").fill(`${closeDate}T11:00`);
+  await rest.getByRole("button", { name: "Close trade" }).click();
+  await expect(rest).toBeHidden();
+  await expect(figure("+1.00R, +$60.00").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
+
+  // Both parts land on the dashboard for that day, and the open-positions tile leads to the open filter.
+  await page.goto(`/?range=custom&from=${closeDate}&to=${closeDate}`);
+  const hero = page.locator("section[aria-label='Net P&L']");
+  await expect(hero.getByRole("button", { name: /\+3\.00R, \+\$140\.00/ })).toBeVisible();
+  await expect(hero).toContainText("2 closed trades");
+  await expect(page.getByRole("link", { name: /Open positions/ })).toHaveAttribute("href", "/trades?status=OPEN");
+  await shot("28-dashboard-after-close");
+});
+
+test("an option trade is labelled by its contract and can expire worthless", async () => {
+  await page.goto("/trades/new");
+  await page.fill("#symbol", optionSymbol);
+  await page.selectOption("#assetClass", "OPTION");
+  await expect(page.locator("#multiplier")).toHaveValue("100"); // contracts default to 100 shares
+  await expect(page.getByText("Contracts", { exact: true })).toBeVisible();
+  await page.getByText("Call", { exact: true }).click();
+  await page.fill("#strikePrice", "450");
+  await page.fill("#expiresAt", expiryKey);
+  await page.fill("#quantity", "2");
+  await page.fill("#entryPrice", "1.5");
+  await page.fill("#stopPrice", "1");
+  await page.fill("#entryAt", `${closeDate}T09:45`);
+  await page.getByRole("button", { name: "Save trade" }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await expect(page.getByRole("heading", { name: optionLabel })).toBeVisible();
+  await expect(page.getByText("7d at entry")).toBeVisible();
+  await shot("29-option-trade");
+
+  // One tap: the contract closes at zero at 16:00 on expiration day.
+  await page.getByRole("button", { name: "Expired worthless" }).click();
+  await expect(figure("-3.00R, -$300.00").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
+  await expect(page.getByText(/16:00$/).first()).toBeVisible();
+
+  await page.goto(`/trades?symbol=${optionSymbol}`);
+  await expect(page.getByRole("link", { name: optionLabel, exact: true })).toBeVisible();
+  await page.goto("/reports");
+  const options = page.locator("section[aria-label='Options']");
+  await expect(options).toContainText("Calls");
+  await expect(options).toContainText("1 to 7 days");
+});
+
 test("import a small CSV with a duplicate row", async () => {
   const csv = [
     "Symbol,Side,Qty,Entry Price,Exit Price,Entry Time,Exit Time,Commission,Notes",
@@ -208,6 +315,29 @@ test("phone-width layout has no horizontal scroll", async () => {
   }));
   expect(widths.scroll).toBeLessThanOrEqual(widths.client);
   await shot("11-mobile-trade-detail");
+
+  // The close sheet at phone width: opened from a card, nothing overflows, and it closes the trade.
+  await page.goto("/trades/new");
+  await page.fill("#symbol", mobileSymbol);
+  await page.fill("#quantity", "10");
+  await page.fill("#entryPrice", "20");
+  await page.fill("#entryAt", `${closeDate}T12:00`);
+  await page.getByRole("button", { name: "Save trade" }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await page.goto(`/trades?symbol=${mobileSymbol}`);
+  await page.getByRole("button", { name: "Close", exact: true }).first().click();
+  const sheet = page.getByRole("dialog", { name: `Close ${mobileSymbol}` });
+  await expect(sheet).toBeVisible();
+  const sheetWidths = await page.evaluate(() => ({
+    scroll: document.scrollingElement?.scrollWidth ?? 0,
+    client: document.scrollingElement?.clientWidth ?? 0,
+  }));
+  expect(sheetWidths.scroll, "close sheet overflows horizontally").toBeLessThanOrEqual(sheetWidths.client);
+  await shot("30-mobile-close-sheet");
+  await sheet.locator("#close-exitPrice").fill("21");
+  await sheet.getByRole("button", { name: "Close trade" }).click();
+  await expect(sheet).toBeHidden();
+  await expect(page.getByRole("button", { name: /\$10\.00/ }).first()).toBeVisible();
   await page.setViewportSize({ width: 1280, height: 900 });
 });
 
@@ -226,6 +356,7 @@ test("Today: check-in drives the plan budget bar", async () => {
   const checkIn = page.locator("section[aria-label='Check-in']");
   await expect(checkIn).toContainText("Saved");
   await expect(checkIn).toContainText("Max trades 3");
+  await expect(page.locator("section[aria-label='Open positions']")).toContainText("No open positions.");
   const budget = page.locator("section[aria-label='Plan budget']");
   await expect(budget).toContainText("of 3");
   await expect(budget).toContainText("of 2.0R");
@@ -509,7 +640,7 @@ test("admin creates a user who must replace the temporary password and then sees
 });
 
 test("delete this run's trades through the UI", async () => {
-  for (const symbol of [`${manualSymbol}X`, manualSymbol, csvSymbol]) {
+  for (const symbol of [`${manualSymbol}X`, closeSymbol, optionSymbol, mobileSymbol, manualSymbol, csvSymbol]) {
     for (let i = 0; i < 5; i++) {
       await page.goto(`/trades?symbol=${symbol}`);
       const link = page.locator("table a[href^='/trades/']").first();

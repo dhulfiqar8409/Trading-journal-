@@ -17,6 +17,14 @@ interface with green and red reserved for the sign of P&L.
 - **Trades**: stocks, options, futures, forex and crypto; long or short; quantity, entry and exit,
   multiplier, fees, stop and target, rating, markdown notes, a mistakes log, tags and screenshots.
   Net P&L, planned risk and the R-multiple are recomputed on every save.
+- **Closing trades**: every open trade offers "Close" (list rows and cards, the detail page, Today's
+  open positions; the dashboard's open-positions tile leads to the open filter). The sheet takes
+  the exit price and time, extra fees, an exit note and the quantity to close; closing less than
+  the position splits it into a closed trade and an open remainder, and rules are checked as on a
+  save. Options add "Expired worthless".
+- **Options**: calls and puts with strike and expiration on the underlying's symbol, shown as
+  "SPY 450C Sep 20" everywhere, 100-share contracts by default, CSV import that reads OCC and
+  broker-style contract symbols, and reports by call/put, options vs shares and days to expiration.
 - **R first**: results read in R-multiples with currency one tap away (or the other way round, per
   the setting); trades without a stop say so and stay out of R statistics.
 - **Rules and the Tilt Ledger**: daily trade caps, daily loss caps in R or currency, time windows,
@@ -108,6 +116,30 @@ All variables are documented in [`.env.example`](.env.example).
 | `POSTGRES_PASSWORD` | compose | Password of the `darkpools` database role created by the `db` service and used to build the app's `DATABASE_URL`. |
 | `APP_PORT` | compose | Host port (bound to 127.0.0.1) that docker compose publishes the app on. Defaults to 3300. |
 | `SEED_USERNAME`, `SEED_EMAIL`, `SEED_PASSWORD` | seed only | Credentials of the demo admin created by `npm run seed` (the username defaults to the email's local part). |
+
+### Closing trades and options
+
+Closing an open trade (from the trades list, the detail page or Today) asks for the exit price,
+the exit time (now by default, never before the entry), any extra fees, an optional exit note
+appended to the notes, and the quantity to close, which defaults to the whole position. A full
+close sets the exit, recomputes P&L, planned risk and the R-multiple and evaluates the active
+rules the way a save does; a broken rule needs the same one-line justification. Closing less than
+the open quantity splits the trade inside one transaction: a new closed trade carries the closed
+quantity with the same entry, tags, account, stop and target, a proportional share of the entry
+fees plus the closing fees, and a note "Partial close of <trade>: closed N of M"; the original
+keeps the remainder open, its screenshots and a note "Closed N of M". Option trades also offer
+"Expired worthless": exit price 0 at 16:00 on the expiration day in the account's time zone.
+
+Option trades keep the underlying as the symbol and add call/put, strike and expiration; the form
+switches the multiplier to 100 and labels the quantity "contracts", and a trade of any other
+asset class cannot carry those fields. Expirations are calendar days (stored at 12:00 UTC).
+Everywhere a symbol appears an option shows as "SPY 450C Sep 20" (with the year when it differs
+from the current one). P&L, planned risk and R use contracts x multiplier; a short is sell to open.
+CSV imports read contract symbols such as `SPY240920C00450000`, `SPY 09/20/2024 450 C` or
+`SPY 20SEP24 450 P` (asset class OPTION and multiplier 100 unless the row has its own) and
+auto-detect call/put, strike and expiration columns. Reports add calls vs puts, options vs shares
+and days to expiration at entry (0, 1 to 7, 8 to 30, 31 or more); the dashboard's top symbols group
+options by underlying; exports carry the new fields.
 
 ### Accounts and sessions
 

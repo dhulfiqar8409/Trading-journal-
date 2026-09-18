@@ -4,6 +4,7 @@
  * instrument, side and account.
  */
 import { Decimal, toDecimal, toDecimalOrNull, ZERO, type DecimalInput } from "@/lib/decimal";
+import { daysToExpiration, dteBucket } from "@/lib/options";
 import { toWallTime } from "@/lib/tz";
 
 export interface BreakdownTrade {
@@ -21,6 +22,9 @@ export interface BreakdownTrade {
   multiplier: DecimalInput;
   entryAt: Date;
   exitAt: Date | null;
+  /** Options only. */
+  optionType?: "CALL" | "PUT" | null;
+  expiresAt?: Date | null;
 }
 
 export interface Bucket {
@@ -210,4 +214,30 @@ export function bySide(trades: BreakdownTrade[]): Bucket[] {
 
 export function byAccount(trades: BreakdownTrade[]): Bucket[] {
   return bucketBy(trades, (t) => ({ key: t.accountName, label: t.accountName, order: 0 }));
+}
+
+/** Calls against puts; only option trades with a known type take part. */
+export function byOptionType(trades: BreakdownTrade[]): Bucket[] {
+  return bucketBy(trades, (t) => {
+    if (t.assetClass !== "OPTION" || !t.optionType) return null;
+    return t.optionType === "CALL" ? { key: "CALL", label: "Calls", order: 0 } : { key: "PUT", label: "Puts", order: 1 };
+  });
+}
+
+/** Options as a whole against shares, with everything else (futures, forex, crypto) in a third row. */
+export function optionsVsShares(trades: BreakdownTrade[]): Bucket[] {
+  return bucketBy(trades, (t) => {
+    if (t.assetClass === "OPTION") return { key: "OPTION", label: "Options", order: 0 };
+    if (t.assetClass === "STOCK") return { key: "STOCK", label: "Shares", order: 1 };
+    return { key: "OTHER", label: "Other", order: 2 };
+  });
+}
+
+/** Option trades by calendar days to expiration when they were entered: 0, 1 to 7, 8 to 30, 31 or more. */
+export function byDaysToExpiration(trades: BreakdownTrade[], timeZone: string): Bucket[] {
+  return bucketBy(trades, (t) => {
+    if (t.assetClass !== "OPTION" || !t.expiresAt) return null;
+    const bucket = dteBucket(daysToExpiration(t.entryAt, t.expiresAt, timeZone));
+    return { key: bucket.key, label: bucket.label, order: bucket.order };
+  });
 }

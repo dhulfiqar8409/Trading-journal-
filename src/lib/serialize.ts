@@ -76,6 +76,10 @@ export interface TradeDTO {
   plannedRisk: number | null;
   stopPrice: string | null;
   targetPrice: string | null;
+  /** Options only: call or put, strike and expiration day (an ISO instant at 12:00 UTC). */
+  optionType: Trade["optionType"];
+  strikePrice: string | null;
+  expiresAt: string | null;
   notes: string;
   rating: number | null;
   mistakes: string | null;
@@ -172,6 +176,9 @@ export function serializeTrade(trade: TradeWithRelations): TradeDTO {
     plannedRisk: toNumber(trade.plannedRisk),
     stopPrice: toPlainString(trade.stopPrice),
     targetPrice: toPlainString(trade.targetPrice),
+    optionType: trade.optionType,
+    strikePrice: toPlainString(trade.strikePrice),
+    expiresAt: trade.expiresAt ? trade.expiresAt.toISOString() : null,
     notes: trade.notes,
     rating: trade.rating,
     mistakes: trade.mistakes,

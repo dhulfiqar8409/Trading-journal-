@@ -313,6 +313,29 @@ export default async function ReportsPage() {
         </div>
       </section>
 
+      <section className="card card-pad min-w-0" aria-label="Options">
+        <h2 className="mb-1 text-sm font-semibold">Options</h2>
+        <p className="mb-3 text-xs text-muted">
+          {breakdowns.optionCount === 0
+            ? "No option trades yet. Log one with the Option asset class and it shows up here."
+            : `${breakdowns.optionCount} closed option trade${breakdowns.optionCount === 1 ? "" : "s"}: calls against puts, options against shares, and how far from expiration you entered.`}
+        </p>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Calls vs puts</h3>
+            <BucketTable rows={breakdowns.optionType} currency={currency} label="Type" mode={mode} empty="No option trades yet." />
+          </div>
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Options vs shares</h3>
+            <BucketTable rows={breakdowns.optionsVsShares} currency={currency} label="Instrument" mode={mode} empty="No closed trades yet." />
+          </div>
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Days to expiration at entry</h3>
+            <BucketTable rows={breakdowns.dte} currency={currency} label="DTE" mode={mode} empty="No option trades yet." />
+          </div>
+        </div>
+      </section>
+
       <section className="card card-pad min-w-0" aria-label="State before the open">
         <h2 className="mb-1 text-sm font-semibold">State before the open</h2>
         <p className="mb-3 text-xs text-muted">

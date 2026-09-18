@@ -1,13 +1,16 @@
 import Link from "next/link";
 import { recheckDayAction } from "@/actions/rules";
 import { BudgetBars } from "@/components/budget-bar";
+import { CloseTrade } from "@/components/close-trade";
 import { CheckInForm, JustifyForm, ReviewForm } from "@/components/day-forms";
 import { ChevronLeftIcon, ChevronRightIcon } from "@/components/icons";
 import { Pnl, RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
 import { TagChip } from "@/components/tag-chip";
 import { StreakCard } from "@/components/streak-card";
+import { closeTarget } from "@/lib/close-target";
 import { requireUser } from "@/lib/auth";
-import { formatDateKey, formatDateTime } from "@/lib/format";
+import { formatDateKey, formatDateTime, formatNumber, formatPrice, formatShortDate } from "@/lib/format";
+import { tradeLabel } from "@/lib/options";
 import { loadStreaks } from "@/lib/queries/streaks";
 import { loadToday } from "@/lib/queries/today";
 import { flattenSearchParams, type SearchParams } from "@/lib/search-params";
@@ -123,10 +126,10 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
             {data.trades.map((t) => {
               const broken = t.ruleEvents.filter((e) => e.status !== "FOLLOWED").length;
               return (
-                <li key={t.id}>
-                  <Link href={`/trades/${t.id}`} className="flex items-center justify-between gap-3 py-2 hover:bg-surface-2">
+                <li key={t.id} className="flex items-center gap-2">
+                  <Link href={`/trades/${t.id}`} className="flex min-w-0 flex-1 items-center justify-between gap-3 py-2 hover:bg-surface-2">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="font-semibold">{t.symbol}</span>
+                      <span className="font-semibold">{tradeLabel(t)}</span>
                       <SideBadge side={t.side} />
                       {t.status === "OPEN" ? <StatusBadge status={t.status} /> : null}
                       <span className="num text-xs text-muted">{formatDateTime(t.entryAt, user.timeZone).slice(-5)}</span>
@@ -139,9 +142,37 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
                       <Pnl value={t.pnl} currency={t.currency} className="block text-xs" />
                     </div>
                   </Link>
+                  {t.status === "OPEN" ? <CloseTrade trade={closeTarget(t, tradeLabel(t))} timeZone={user.timeZone} /> : null}
                 </li>
               );
             })}
+          </ul>
+        )}
+      </section>
+
+      <section className="card card-pad" aria-label="Open positions">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold">Open positions</h2>
+          <Link href="/trades?status=OPEN" className="text-xs text-accent hover:text-accent-strong">
+            All open trades
+          </Link>
+        </div>
+        {data.openPositions.length === 0 ? (
+          <p className="text-sm text-muted">No open positions.</p>
+        ) : (
+          <ul className="divide-y divide-line">
+            {data.openPositions.map((t) => (
+              <li key={t.id} className="flex items-center gap-2">
+                <Link href={`/trades/${t.id}`} className="flex min-w-0 flex-1 flex-wrap items-center gap-2 py-2 hover:bg-surface-2">
+                  <span className="font-semibold">{tradeLabel(t)}</span>
+                  <SideBadge side={t.side} />
+                  <span className="num text-xs text-muted">
+                    {formatNumber(t.quantity, 8)} @ {formatPrice(t.entryPrice)} · since {formatShortDate(t.entryAt, user.timeZone)}
+                  </span>
+                </Link>
+                <CloseTrade trade={closeTarget(t, tradeLabel(t))} timeZone={user.timeZone} />
+              </li>
+            ))}
           </ul>
         )}
       </section>

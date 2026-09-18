@@ -23,6 +23,32 @@ Guiding rules:
   screenshots. Net P&L, planned risk (the size of 1R) and the R-multiple are recomputed on every
   save. Screenshots live on disk under `UPLOAD_DIR` and are served only through an authenticated
   route.
+- **Closing trades**: every open trade offers "Close" on the trades list (rows and cards), the
+  detail page (primary button) and Today's open positions; the dashboard's open-positions tile
+  links to the open trades filter. The close sheet takes the exit price, the exit time (defaults
+  to now in the owner's zone, never before the entry), extra fees added to the trade's fees, an
+  optional exit note appended to the notes, and the quantity to close (the whole position by
+  default). A full close sets exit price and time, status CLOSED, recomputes P&L and R and runs
+  the rules engine as a save does, so a broken rule needs the usual justification. A partial
+  close splits the trade in one transaction: a new CLOSED trade with the closed quantity, the
+  same entry data, tags, account, stop and target, a proportional share of the entry fees plus the
+  closing fees and a note "Partial close of <trade>: closed N of M"; the original keeps the
+  remainder, stays OPEN, keeps its screenshots and gets "Closed N of M" in its notes. Option
+  trades add "Expired worthless": exit price 0 at 16:00 on expiration day in the owner's zone.
+- **Options**: `Trade.optionType` (CALL or PUT), `strikePrice` and `expiresAt` (a calendar day
+  stored at 12:00 UTC), all optional and only allowed when the asset class is OPTION, where they
+  are required; the symbol stays the underlying. The form defaults the multiplier to 100 and
+  labels the quantity "contracts". One formatter renders option trades as "SPY 450C Sep 20"
+  (strike without trailing zeros, C or P, expiration day, the year added when it differs from the
+  current one) on lists, the detail page, dashboard tables and tooltips, recent trades, Today,
+  reports and share pages. P&L, planned risk and R use contracts x multiplier; SHORT is sell to
+  open. CSV import recognises OCC/OSI symbols (`SPY240920C00450000`) and broker styles
+  (`SPY 09/20/2024 450 C`, `SPY 20SEP24 450 P`), setting the asset class to OPTION and the
+  multiplier to 100 unless the row says otherwise, and auto-detects call/put, strike and
+  expiration columns. Reports break results down by call vs put, options vs shares and days to
+  expiration at entry (0, 1 to 7, 8 to 30, 31 or more); top symbols group options by underlying;
+  CSV and JSON exports include the fields; the seed contains option trades, one expired worthless
+  and one closed in two parts.
 - **Tags**: strategy, setup, mistake and custom kinds with colours.
 - **Accounts**: several broker accounts with their own currency; one is the default.
 - **CSV import**: header auto-detection, a column mapping step, a preview with per-row errors, and

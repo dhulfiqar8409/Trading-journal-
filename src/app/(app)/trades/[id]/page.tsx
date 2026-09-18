@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { deleteAttachmentAction, deleteTradeAction, updateTradeAction } from "@/actions/trades";
 import { AttachmentUploader } from "@/components/attachments";
+import { CloseTrade } from "@/components/close-trade";
 import { ConfirmSubmit } from "@/components/confirm-button";
 import { Markdown } from "@/components/markdown";
 import { PnlFigure } from "@/components/figure";
@@ -10,9 +11,11 @@ import { ShareLinks } from "@/components/share-links";
 import { RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
 import { TagChip } from "@/components/tag-chip";
 import { TradeForm } from "@/components/trade-form";
+import { closeTarget } from "@/lib/close-target";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { formatDateTime, formatDuration, formatMoney, formatNumber, formatPrice, formatRatio } from "@/lib/format";
+import { formatDateKey, formatDateTime, formatDuration, formatMoney, formatNumber, formatPrice, formatRatio } from "@/lib/format";
+import { daysToExpiration, expirationKey, isOptionTrade, tradeLabel } from "@/lib/options";
 import { plannedRewardRisk, riskAmount } from "@/lib/pnl";
 import { getTrade } from "@/lib/queries/trades";
 import { serializeRule, serializeTag, serializeTrade } from "@/lib/serialize";
@@ -21,8 +24,8 @@ import { toDateTimeLocalValue } from "@/lib/tz";
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const user = await requireUser();
-  const trade = await db.trade.findFirst({ where: { id, userId: user.id }, select: { symbol: true } });
-  return { title: trade ? `${trade.symbol} trade` : "Trade" };
+  const trade = await db.trade.findFirst({ where: { id, userId: user.id }, select: { symbol: true, assetClass: true, optionType: true, strikePrice: true, expiresAt: true } });
+  return { title: trade ? `${tradeLabel(trade)} trade` : "Trade" };
 }
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -70,6 +73,8 @@ export default async function TradeDetailPage({
   const plannedRR = plannedRewardRisk(pnlInput);
   const updateAction = updateTradeAction.bind(null, trade.id);
   const deleteAction = deleteTradeAction.bind(null, trade.id);
+  const label = tradeLabel(trade);
+  const option = isOptionTrade(trade);
 
   return (
     <div className="flex flex-col gap-4">
@@ -78,11 +83,16 @@ export default async function TradeDetailPage({
           ← Trades
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-2">
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{trade.symbol}</h1>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{label}</h1>
           <SideBadge side={trade.side} />
           <StatusBadge status={trade.status} />
           <span className="badge">{trade.assetClass}</span>
           <span className="text-sm text-muted">{trade.accountName}</span>
+          {trade.status === "OPEN" ? (
+            <div className="ml-auto">
+              <CloseTrade trade={closeTarget(trade, label)} timeZone={user.timeZone} primary />
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -112,7 +122,18 @@ export default async function TradeDetailPage({
           </div>
         </div>
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <Fact label="Quantity">{formatNumber(trade.quantity, 8)}</Fact>
+          <Fact label={option ? "Contracts" : "Quantity"}>{formatNumber(trade.quantity, 8)}</Fact>
+          {option ? (
+            <>
+              <Fact label="Contract">
+                {trade.optionType === "CALL" ? "Call" : "Put"} · strike {formatPrice(trade.strikePrice)}
+              </Fact>
+              <Fact label="Expires">
+                {formatDateKey(expirationKey(trade.expiresAt as string))}
+                <span className="text-muted"> · {daysToExpiration(new Date(trade.entryAt), trade.expiresAt as string, user.timeZone)}d at entry</span>
+              </Fact>
+            </>
+          ) : null}
           <Fact label="Entry">{formatPrice(trade.entryPrice)}</Fact>
           <Fact label="Exit">{formatPrice(trade.exitPrice)}</Fact>
           <Fact label="Fees">{formatMoney(trade.fees, { currency: trade.currency })}</Fact>

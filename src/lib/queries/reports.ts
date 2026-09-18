@@ -3,11 +3,14 @@ import { adherenceSplit, overallAdherence, ruleCosts, weeklyAdherence, type Adhe
 import {
   byAccount,
   byDayOfWeek,
+  byDaysToExpiration,
   byHoldDuration,
   byHourOfDay,
   byInstrument,
+  byOptionType,
   bySide,
   bySizeBucket,
+  optionsVsShares,
   rDistribution,
   type Bucket,
   type BreakdownTrade,
@@ -17,6 +20,7 @@ import { db } from "@/lib/db";
 import { toNumber, toPlainString } from "@/lib/decimal";
 import { edgeDecay } from "@/lib/edge-decay";
 import { findLeaks, type LeakTrade } from "@/lib/leaks";
+import { tradeLabel } from "@/lib/options";
 import { dateKeyInZone } from "@/lib/tz";
 
 export interface BucketDTO {
@@ -61,6 +65,11 @@ export interface BreakdownsReport {
   energy: BucketDTO[];
   sleep: BucketDTO[];
   planned: BucketDTO[];
+  /** Options: calls against puts, options against shares, and days to expiration when entered. */
+  optionType: BucketDTO[];
+  optionsVsShares: BucketDTO[];
+  dte: BucketDTO[];
+  optionCount: number;
   closedCount: number;
   daysWithState: number;
 }
@@ -97,6 +106,8 @@ async function loadBreakdownTrades(userId: string): Promise<LeakTrade[]> {
       multiplier: true,
       entryAt: true,
       exitAt: true,
+      optionType: true,
+      expiresAt: true,
       account: { select: { name: true } },
       tags: { select: { id: true, kind: true } },
     },
@@ -116,6 +127,8 @@ async function loadBreakdownTrades(userId: string): Promise<LeakTrade[]> {
     multiplier: toPlainString(t.multiplier) ?? "1",
     entryAt: t.entryAt,
     exitAt: t.exitAt,
+    optionType: t.optionType,
+    expiresAt: t.expiresAt,
     setupIds: t.tags.filter((tag) => tag.kind === "SETUP").map((tag) => tag.id),
   }));
 }
@@ -152,6 +165,10 @@ export async function loadBreakdowns(userId: string, timeZone: string): Promise<
     energy: bucketByState(base, states, timeZone, "energy").map(bucketDto),
     sleep: bucketByState(base, states, timeZone, "sleep").map(bucketDto),
     planned: plannedVsUnplanned(base, states, timeZone).map(bucketDto),
+    optionType: byOptionType(base).map(bucketDto),
+    optionsVsShares: optionsVsShares(base).map(bucketDto),
+    dte: byDaysToExpiration(base, timeZone).map(bucketDto),
+    optionCount: trades.filter((t) => t.assetClass === "OPTION").length,
     closedCount: trades.length,
     daysWithState: states.filter((d) => d.mood !== null || d.sleepHours !== null || d.focus !== null || d.energy !== null).length,
   };
@@ -303,6 +320,10 @@ export async function loadAdherenceReport(userId: string, timeZone: string, week
       select: {
         id: true,
         symbol: true,
+        assetClass: true,
+        optionType: true,
+        strikePrice: true,
+        expiresAt: true,
         entryAt: true,
         exitAt: true,
         status: true,
@@ -333,7 +354,7 @@ export async function loadAdherenceReport(userId: string, timeZone: string, week
       ledger.push({
         id: e.id,
         tradeId: t.id,
-        symbol: t.symbol,
+        symbol: tradeLabel(t),
         date: dateKeyInZone(t.entryAt, timeZone),
         ruleTitle: e.rule.title,
         status: e.status,

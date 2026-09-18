@@ -68,6 +68,11 @@ enum UserRole {
   USER
 }
 
+enum OptionType {
+  CALL
+  PUT
+}
+
 model User {
   id                 String      @id @default(cuid())
   /** Sign-in name, stored lowercase so uniqueness is case-insensitive. */
@@ -133,6 +138,10 @@ model Trade {
   rMultiple   Decimal?    @db.Decimal(20, 8)
   /** Money at risk to the planned stop: |entry - stop| x qty x multiplier (the size of 1R). */
   plannedRisk Decimal?    @db.Decimal(20, 8)
+  /** Options only (symbol stays the underlying): call or put, strike, and the expiration day stored at 12:00 UTC. */
+  optionType  OptionType?
+  strikePrice Decimal?    @db.Decimal(20, 8)
+  expiresAt   DateTime?
   notes       String      @default("")
   rating      Int?
   mistakes    String?

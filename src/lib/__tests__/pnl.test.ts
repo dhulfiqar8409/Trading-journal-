@@ -87,6 +87,33 @@ describe("risk and R-multiple", () => {
   });
 });
 
+describe("options", () => {
+  // Contracts x multiplier everywhere: P&L, planned risk and R all scale by the 100 shares a contract controls.
+  it("computes a long call with a stop", () => {
+    const call = { side: "LONG" as const, quantity: 5, entryPrice: "3.20", exitPrice: "4.10", multiplier: 100, stopPrice: "2.40" };
+    expect(str(netPnl(call))).toBe("450");
+    expect(str(riskAmount(call))).toBe("400");
+    expect(str(rMultiple(call))).toBe("1.125");
+  });
+
+  it("treats a short put as sell to open: a falling premium is the profit", () => {
+    const put = { side: "SHORT" as const, quantity: 3, entryPrice: "2.50", exitPrice: "1.10", multiplier: 100, stopPrice: "3.50", fees: "3.9" };
+    expect(str(netPnl(put))).toBe("416.1");
+    expect(str(riskAmount(put))).toBe("300");
+    expect(str(rMultiple(put))).toBe("1.387");
+    // Assigned or bought back higher: a loss.
+    expect(str(netPnl({ ...put, exitPrice: "4.00", fees: "0" }))).toBe("-450");
+  });
+
+  it("closes an expired long contract at zero for the whole premium", () => {
+    const expired = computeTradeMetrics({ side: "LONG", quantity: 4, entryPrice: "0.85", exitPrice: "0", multiplier: 100, stopPrice: "0.40", fees: "2.6" });
+    expect(expired.status).toBe("CLOSED");
+    expect(str(expired.pnl)).toBe("-342.6");
+    expect(str(expired.risk)).toBe("180");
+    expect(expired.rMultiple?.toDecimalPlaces(4).toFixed()).toBe("-1.9033");
+  });
+});
+
 describe("exitPriceForNetPnl", () => {
   it("round-trips a long trade with fees and multiplier", () => {
     const base = { side: "LONG" as const, quantity: 2, entryPrice: "5000", multiplier: 50, fees: "4.2" };

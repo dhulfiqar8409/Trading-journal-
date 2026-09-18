@@ -13,6 +13,7 @@ import { RollUp } from "@/components/roll-up";
 import { StreakCard } from "@/components/streak-card";
 import { requireUser } from "@/lib/auth";
 import { formatDateKey, formatMoney, formatPercent, formatR, formatRatio, formatShortDate } from "@/lib/format";
+import { tradeLabel } from "@/lib/options";
 import { loadDashboard, resolveMonth, resolveRange } from "@/lib/queries/dashboard";
 import { loadStreaks } from "@/lib/queries/streaks";
 import { flattenSearchParams, withParams, type SearchParams } from "@/lib/search-params";
@@ -84,7 +85,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           tone={s.maxDrawdown > 0 ? -1 : 0}
           sub={mode === "R" ? "Peak to trough of cumulative R" : "Peak to trough of cumulative P&L"}
         />
-        <StatTile label="Trades" value={String(s.tradeCount)} sub={`${s.openCount} open · ${s.rTradeCount} with stops`} />
+        <StatTile label="Open positions" value={String(s.openCount)} sub={`${s.tradeCount} closed · ${s.rTradeCount} with stops · tap to close`} href="/trades?status=OPEN" />
         <StatTile
           label="Streak"
           value={s.streak.kind === "NONE" ? "—" : `${s.streak.length} ${s.streak.kind === "WIN" ? "win" : "loss"}${s.streak.length === 1 ? "" : s.streak.kind === "WIN" ? "s" : "es"}`}
@@ -355,7 +356,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
               <li key={t.id}>
                 <Link href={`/trades/${t.id}`} className="flex items-center justify-between gap-3 py-2 hover:bg-surface-2">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className="font-semibold">{t.symbol}</span>
+                    <span className="font-semibold">{tradeLabel(t)}</span>
                     <SideBadge side={t.side} />
                     {t.status === "OPEN" ? <StatusBadge status={t.status} /> : null}
                     <span className="num truncate text-xs text-muted">{formatShortDate(t.entryAt, user.timeZone)}</span>

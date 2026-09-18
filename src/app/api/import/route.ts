@@ -83,6 +83,9 @@ export async function POST(request: Request) {
         rMultiple: p.rMultiple,
         stopPrice: p.stopPrice,
         targetPrice: p.targetPrice,
+        optionType: p.optionType,
+        strikePrice: p.strikePrice,
+        expiresAt: p.expiresAt,
         notes: p.notes,
         importHash: hash,
       }));

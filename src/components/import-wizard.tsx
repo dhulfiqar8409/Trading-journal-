@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import type { AccountOption } from "@/components/trade-form";
 import { ASSET_CLASSES, FIELD_INFO, IMPORT_FIELDS, guessMapping, parseImportRow, type ColumnMapping, type ImportOptions } from "@/lib/csv";
 import { formatMoney, formatPrice } from "@/lib/format";
+import { tradeLabel } from "@/lib/options";
 
 type Row = Record<string, string>;
 
@@ -163,7 +164,8 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
       <section className="card card-pad">
         <h2 className="text-sm font-semibold">1. Choose a CSV file</h2>
         <p className="mt-1 text-xs text-muted">
-          One row per trade with a header row. Columns are matched automatically and can be adjusted below.
+          One row per trade with a header row. Columns are matched automatically and can be adjusted below. Option contracts in the symbol
+          column (SPY240920C00450000, SPY 09/20/2024 450 C) are read as options on the underlying.
         </p>
         <label className="btn mt-3 w-fit cursor-pointer">
           {fileName ? "Choose another file" : "Choose file"}
@@ -354,7 +356,9 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
                       <td className="num text-muted">{index + 2}</td>
                       {result.ok ? (
                         <>
-                          <td className="font-medium">{result.row.symbol}</td>
+                          <td className="font-medium">
+                            {tradeLabel({ symbol: result.row.symbol, assetClass: result.row.assetClass, optionType: result.row.optionType, strikePrice: result.row.strikePrice, expiresAt: result.row.expiresAt })}
+                          </td>
                           <td>{result.row.side}</td>
                           <td className="num text-right">{result.row.quantity}</td>
                           <td className="num text-right">{formatPrice(result.row.entryPrice)}</td>

@@ -7,6 +7,7 @@ import { TagChip } from "@/components/tag-chip";
 import { WeekCard } from "@/components/week-card";
 import { db } from "@/lib/db";
 import { formatDateTime, formatMoney, formatPrice, formatR, pnlClass } from "@/lib/format";
+import { tradeLabel } from "@/lib/options";
 import { loadWeekReview } from "@/lib/queries/week";
 import { serializeTrade } from "@/lib/serialize";
 import { findActiveShare } from "@/lib/share";
@@ -47,7 +48,7 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
     body = (
       <div className="card hero-card card-pad">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">{trade.symbol}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{tradeLabel(trade)}</h1>
           <SideBadge side={trade.side} />
           <StatusBadge status={trade.status} />
           <span className="badge">{trade.assetClass}</span>

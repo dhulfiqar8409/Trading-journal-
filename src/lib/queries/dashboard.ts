@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { toNumber, toPlainString } from "@/lib/decimal";
 import { edgeScore, edgeScoreTrend } from "@/lib/edge-score";
 import { mistakeCosts } from "@/lib/mistakes";
+import { tradeLabel } from "@/lib/options";
 import { serializeTrade, type TradeDTO } from "@/lib/serialize";
 import {
   breakdownBySymbol,
@@ -256,6 +257,10 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
       select: {
         id: true,
         symbol: true,
+        assetClass: true,
+        optionType: true,
+        strikePrice: true,
+        expiresAt: true,
         status: true,
         pnl: true,
         rMultiple: true,
@@ -301,7 +306,7 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
   const curves = threeCurves(
     closed.map((t) => ({
       id: t.id,
-      symbol: t.symbol,
+      symbol: tradeLabel(t),
       status: t.status,
       exitAt: t.exitAt,
       pnl: toPlainString(t.pnl),
@@ -315,7 +320,8 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
   );
   const summary = summarize(statsTrades);
   summary.openCount = openCount;
-  const symbols = new Map(closed.map((t) => [t.id, t.symbol]));
+  // Option trades are labelled by their contract in tooltips and tables; the top-symbols table groups them by underlying.
+  const symbols = new Map(closed.map((t) => [t.id, tradeLabel(t)]));
 
   const monthDays = dailyPnl(
     monthTrades.map((t) => ({ id: t.id, symbol: t.symbol, status: t.status, pnl: t.pnl, entryAt: t.entryAt, exitAt: t.exitAt })),

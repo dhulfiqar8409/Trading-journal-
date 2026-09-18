@@ -6,7 +6,9 @@
 import bcrypt from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { partialCloseNotes, planClose, remainderNotes } from "../src/lib/close";
 import { Decimal } from "../src/lib/decimal";
+import { expirationCloseTime, expirationInstant, formatOptionLabel, OPTION_MULTIPLIER } from "../src/lib/options";
 import { computeTradeMetrics, type Side } from "../src/lib/pnl";
 import { usernameFromEmail } from "../src/lib/users";
 
@@ -197,8 +199,138 @@ async function main() {
     created++;
   }
 
+  // Options: a few contracts on the main account, one expired worthless and one closed in two parts.
+  created += await seedOptions(user.id, accounts.main, tagIds(byKind("STRATEGY")[0], byKind("SETUP")[3]), now);
+
   console.log(`Seeded ${created} trades, ${tags.length} tags and 2 accounts for @${username} (${email})`);
   console.log(`Sign in with username ${username} / ${password}`);
+}
+
+const tagIds = (...tags: { id: string }[]) => tags.map((t) => ({ id: t.id }));
+const dayMs = 24 * 60 * 60 * 1000;
+const dateKeyOf = (date: Date) => date.toISOString().slice(0, 10);
+
+interface OptionSeed {
+  symbol: string;
+  optionType: "CALL" | "PUT";
+  strike: string;
+  side: Side;
+  contracts: string;
+  entryPrice: string;
+  /** "expired" closes at zero on expiration day. */
+  exit: string | "expired";
+  stop: string;
+  entryDaysAgo: number;
+  daysToExpiry: number;
+  holdMinutes: number;
+  notes: string;
+}
+
+const OPTION_SEEDS: OptionSeed[] = [
+  { symbol: "SPY", optionType: "CALL", strike: "450", side: "LONG", contracts: "5", entryPrice: "3.20", exit: "4.10", stop: "2.40", entryDaysAgo: 40, daysToExpiry: 14, holdMinutes: 180, notes: "Bought the pullback into the 20-day and sold into the retest of the highs." },
+  { symbol: "AAPL", optionType: "PUT", strike: "220", side: "SHORT", contracts: "3", entryPrice: "2.50", exit: "1.10", stop: "3.50", entryDaysAgo: 33, daysToExpiry: 10, holdMinutes: 3 * 24 * 60, notes: "Sold puts under support after the flush; covered once the bounce was underway." },
+  { symbol: "QQQ", optionType: "PUT", strike: "470", side: "LONG", contracts: "2", entryPrice: "5.00", exit: "3.80", stop: "4.00", entryDaysAgo: 25, daysToExpiry: 21, holdMinutes: 240, notes: "Hedge that never worked. The stop was 4.00 and I sat through it." },
+  { symbol: "NVDA", optionType: "CALL", strike: "130", side: "LONG", contracts: "4", entryPrice: "0.85", exit: "expired", stop: "0.40", entryDaysAgo: 18, daysToExpiry: 4, holdMinutes: 0, notes: "Lottery ticket into the number. Expired worthless." },
+];
+
+function seedEntry(now: number, daysAgo: number): Date {
+  const entry = new Date(now - daysAgo * dayMs);
+  entry.setUTCHours(14, 5, 0, 0);
+  if (entry.getUTCDay() === 0) entry.setUTCDate(entry.getUTCDate() - 2);
+  if (entry.getUTCDay() === 6) entry.setUTCDate(entry.getUTCDate() - 1);
+  return entry;
+}
+
+async function seedOptions(userId: string, accountId: string, tags: { id: string }[], now: number): Promise<number> {
+  const timeZone = "America/New_York";
+  const multiplier = OPTION_MULTIPLIER;
+  let created = 0;
+  for (const o of OPTION_SEEDS) {
+    const entryAt = seedEntry(now, o.entryDaysAgo);
+    const expiresAt = expirationInstant(dateKeyOf(new Date(entryAt.getTime() + o.daysToExpiry * dayMs)));
+    if (!expiresAt) throw new Error("bad expiration in seed");
+    const expired = o.exit === "expired";
+    const exitPrice = expired ? "0" : o.exit;
+    const exitAt = expired ? expirationCloseTime(expiresAt, timeZone) : new Date(entryAt.getTime() + o.holdMinutes * 60000);
+    const fees = new Decimal("0.65").times(o.contracts).times(expired ? 1 : 2).toFixed();
+    const metrics = computeTradeMetrics({ side: o.side, quantity: o.contracts, entryPrice: o.entryPrice, exitPrice, multiplier, fees, stopPrice: o.stop });
+    await db.trade.create({
+      data: {
+        userId,
+        accountId,
+        symbol: o.symbol,
+        assetClass: "OPTION",
+        optionType: o.optionType,
+        strikePrice: o.strike,
+        expiresAt,
+        side: o.side,
+        quantity: o.contracts,
+        entryPrice: o.entryPrice,
+        exitPrice,
+        multiplier,
+        fees,
+        entryAt,
+        exitAt,
+        status: metrics.status,
+        pnl: metrics.pnl ? metrics.pnl.toDecimalPlaces(8).toFixed() : null,
+        rMultiple: metrics.rMultiple ? metrics.rMultiple.toDecimalPlaces(8).toFixed() : null,
+        plannedRisk: metrics.risk ? metrics.risk.toDecimalPlaces(8).toFixed() : null,
+        stopPrice: o.stop,
+        rating: expired ? 2 : 4,
+        notes: o.notes,
+        tags: { connect: tags },
+      },
+    });
+    created++;
+  }
+
+  // A partial close: 10 TSLA calls bought five days ago, 6 sold two days later, 4 still open.
+  const entryAt = seedEntry(now, 5);
+  const expiresAt = expirationInstant(dateKeyOf(new Date(entryAt.getTime() + 20 * dayMs)));
+  if (!expiresAt) throw new Error("bad expiration in seed");
+  const contract = { symbol: "TSLA", assetClass: "OPTION" as const, optionType: "CALL" as const, strikePrice: "250", expiresAt, side: "LONG" as const, entryPrice: "4.00", stopPrice: "3.00", multiplier };
+  const label = formatOptionLabel(contract);
+  const plan = planClose({ quantity: "10", fees: "13" }, { closeQuantity: "6", extraFees: "3.9" });
+  if (!plan.ok || plan.plan.kind !== "partial") throw new Error("seed partial close did not split");
+  const { closed, remaining } = plan.plan;
+  const notes = "Momentum call position sized for a two-week hold; taking profits in pieces.";
+  const remainder = await db.trade.create({
+    data: {
+      userId,
+      accountId,
+      ...contract,
+      quantity: remaining.quantity,
+      fees: remaining.fees,
+      entryAt,
+      status: "OPEN",
+      plannedRisk: computeTradeMetrics({ ...contract, quantity: remaining.quantity, fees: remaining.fees }).risk?.toDecimalPlaces(8).toFixed() ?? null,
+      notes: remainderNotes({ notes, closed: closed.quantity, total: "10", remaining: remaining.quantity }),
+      tags: { connect: tags },
+    },
+    select: { id: true },
+  });
+  const exitAt = new Date(entryAt.getTime() + 2 * dayMs);
+  const closedMetrics = computeTradeMetrics({ ...contract, quantity: closed.quantity, fees: closed.fees, exitPrice: "5.20" });
+  await db.trade.create({
+    data: {
+      userId,
+      accountId,
+      ...contract,
+      quantity: closed.quantity,
+      fees: closed.fees,
+      exitPrice: "5.20",
+      entryAt,
+      exitAt,
+      status: "CLOSED",
+      pnl: closedMetrics.pnl?.toDecimalPlaces(8).toFixed() ?? null,
+      rMultiple: closedMetrics.rMultiple?.toDecimalPlaces(8).toFixed() ?? null,
+      plannedRisk: closedMetrics.risk?.toDecimalPlaces(8).toFixed() ?? null,
+      rating: 4,
+      notes: partialCloseNotes({ notes, label, originalId: remainder.id, closed: closed.quantity, total: "10", exitNote: "Sold 6 into the gap up." }),
+      tags: { connect: tags },
+    },
+  });
+  return created + 2;
 }
 
 main()

@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { toDecimalOrNull, toNumber, ZERO } from "@/lib/decimal";
+import { tradeLabel } from "@/lib/options";
 import { serializeDay, serializeRule, serializeTag, serializeTrade, type DayDTO, type RuleDTO, type TagDTO, type TradeDTO } from "@/lib/serialize";
 import { addDaysToKey, dateKeyInZone, endOfDayInZone, startOfDayInZone } from "@/lib/tz";
 
@@ -35,6 +36,8 @@ export interface TodayData {
   nextKey: string;
   day: DayDTO | null;
   trades: TradeDTO[];
+  /** Every open trade, whatever day it was entered, newest first. */
+  openPositions: TradeDTO[];
   events: DayEventDTO[];
   followedCount: number;
   budget: BudgetDTO;
@@ -89,13 +92,14 @@ export async function loadBudget(userId: string, timeZone: string, dateKey: stri
 export async function loadToday(userId: string, timeZone: string, requestedKey?: string): Promise<TodayData> {
   const todayKey = dateKeyInZone(new Date(), timeZone);
   const dateKey = requestedKey && /^\d{4}-\d{2}-\d{2}$/.test(requestedKey) ? requestedKey : todayKey;
-  const [day, trades, rules, setups, budget, defaultAccount] = await Promise.all([
+  const [day, trades, openPositions, rules, setups, budget, defaultAccount] = await Promise.all([
     db.day.findUnique({ where: { userId_date: { userId, date: dateKey } } }),
     db.trade.findMany({
       where: { userId, entryAt: { gte: startOfDayInZone(dateKey, timeZone), lt: endOfDayInZone(dateKey, timeZone) } },
       orderBy: [{ entryAt: "asc" }, { createdAt: "asc" }],
       include: relationInclude,
     }),
+    db.trade.findMany({ where: { userId, status: "OPEN" }, orderBy: [{ entryAt: "desc" }, { createdAt: "desc" }], include: relationInclude }),
     db.rule.findMany({ where: { userId }, orderBy: [{ active: "desc" }, { createdAt: "asc" }] }),
     db.tag.findMany({ where: { userId, kind: "SETUP" }, orderBy: { name: "asc" } }),
     loadBudget(userId, timeZone, dateKey),
@@ -109,7 +113,7 @@ export async function loadToday(userId: string, timeZone: string, requestedKey?:
         followedCount++;
         continue;
       }
-      events.push({ id: e.id, tradeId: t.id, symbol: t.symbol, ruleTitle: e.rule.title, status: e.status, justification: e.justification });
+      events.push({ id: e.id, tradeId: t.id, symbol: tradeLabel(t), ruleTitle: e.rule.title, status: e.status, justification: e.justification });
     }
   }
   return {
@@ -119,6 +123,7 @@ export async function loadToday(userId: string, timeZone: string, requestedKey?:
     nextKey: addDaysToKey(dateKey, 1),
     day: day ? serializeDay(day) : null,
     trades: trades.map(serializeTrade),
+    openPositions: openPositions.map(serializeTrade),
     events,
     followedCount,
     budget,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Decimal } from "@/lib/decimal";
 import { ASSET_CLASSES, IMPORT_FIELDS } from "@/lib/csv";
+import { OPTION_TYPES } from "@/lib/options";
 import { RULE_KIND_INFO, RULE_KINDS } from "@/lib/rules";
 import { isValidTimeZone } from "@/lib/tz";
 import { PASSWORD_MAX_BYTES, PASSWORD_MIN_LENGTH, PASSWORD_TOO_LONG, USERNAME_HINT, USERNAME_RE, normalizeUsername, passwordByteLength } from "@/lib/users";
@@ -153,8 +154,34 @@ export const tradeSchema = z.object({
   customFollowed: idList,
   /** A shared screenshot waiting to be attached to the new trade. */
   draftId: optionalText(64),
+  /** Options only: the contract. Required for OPTION trades, refused for every other asset class. */
+  optionType: z.preprocess(emptyToUndefined, z.enum(OPTION_TYPES).optional()),
+  strikePrice: z.preprocess(emptyToUndefined, positiveDecimal.optional()),
+  expiresAt: z.preprocess(emptyToUndefined, dateKeySchema.optional()),
+}).superRefine((d, ctx) => {
+  if (d.assetClass === "OPTION") {
+    if (!d.optionType) ctx.addIssue({ code: "custom", path: ["optionType"], message: "Choose call or put" });
+    if (d.strikePrice === undefined) ctx.addIssue({ code: "custom", path: ["strikePrice"], message: "Enter the strike" });
+    if (!d.expiresAt) ctx.addIssue({ code: "custom", path: ["expiresAt"], message: "Enter the expiration date" });
+    return;
+  }
+  for (const field of ["optionType", "strikePrice", "expiresAt"] as const) {
+    if (d[field] !== undefined) ctx.addIssue({ code: "custom", path: [field], message: "Only option trades have a call/put, strike and expiration" });
+  }
 });
 export type TradeInput = z.infer<typeof tradeSchema>;
+
+/** Closing an open trade from the close sheet: the closing fill, its time and fees, and how much of the position it closes. */
+export const closeTradeSchema = z.object({
+  closeQuantity: positiveDecimal,
+  exitPrice: nonNegativeDecimal,
+  exitAt: z.string().trim().min(1, "Enter the exit time"),
+  extraFees: z.preprocess(emptyToUndefined, nonNegativeDecimal.optional()),
+  exitNote: optionalText(2000),
+  justification: optionalText(300),
+  overridden: checkbox,
+});
+export type CloseTradeInput = z.infer<typeof closeTradeSchema>;
 
 export const ruleSchema = z
   .object({

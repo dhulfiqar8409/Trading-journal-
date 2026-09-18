@@ -2,6 +2,7 @@ import Papa from "papaparse";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { toPlainString } from "@/lib/decimal";
+import { expirationKey } from "@/lib/options";
 import { allTrades } from "@/lib/queries/trades";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,9 @@ export async function GET() {
     rMultiple: toPlainString(t.rMultiple) ?? "",
     stopPrice: toPlainString(t.stopPrice) ?? "",
     targetPrice: toPlainString(t.targetPrice) ?? "",
+    optionType: t.optionType ?? "",
+    strikePrice: toPlainString(t.strikePrice) ?? "",
+    expiresAt: t.expiresAt ? expirationKey(t.expiresAt) : "",
     rating: t.rating ?? "",
     tags: t.tags.map((tag) => tag.name).join("; "),
     notes: t.notes,

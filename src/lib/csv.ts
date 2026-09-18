@@ -7,6 +7,7 @@
 import { Decimal, toDecimal } from "@/lib/decimal";
 import { parseFlexibleDate } from "@/lib/dates";
 import { importHashKey } from "@/lib/import-hash-key";
+import { expirationInstant, OPTION_MULTIPLIER, parseOptionSymbol, type OptionType } from "@/lib/options";
 import { exitPriceForNetPnl, netPnl, rMultiple, type Side } from "@/lib/pnl";
 
 export const ASSET_CLASSES = ["STOCK", "OPTION", "FUTURES", "FOREX", "CRYPTO"] as const;
@@ -26,6 +27,9 @@ export const IMPORT_FIELDS = [
   "multiplier",
   "stopPrice",
   "targetPrice",
+  "optionType",
+  "strikePrice",
+  "expiresAt",
   "notes",
 ] as const;
 export type ImportField = (typeof IMPORT_FIELDS)[number];
@@ -44,6 +48,9 @@ export const FIELD_INFO: Record<ImportField, { label: string; required: boolean;
   multiplier: { label: "Multiplier", required: false, hint: "Point value or contract size. Defaults to the value chosen below" },
   stopPrice: { label: "Stop price", required: false, hint: "Initial stop, used for R-multiples" },
   targetPrice: { label: "Target price", required: false, hint: "Planned target" },
+  optionType: { label: "Call / put", required: false, hint: "Options: call or put. Read from the symbol when it names the contract" },
+  strikePrice: { label: "Strike", required: false, hint: "Options: strike price" },
+  expiresAt: { label: "Expiration", required: false, hint: "Options: expiration date" },
   notes: { label: "Notes", required: false, hint: "Free text appended to the trade notes" },
 };
 
@@ -74,6 +81,10 @@ export interface ParsedImportRow {
   rMultiple: string | null;
   stopPrice: string | null;
   targetPrice: string | null;
+  /** Options only; null for everything else. */
+  optionType: OptionType | null;
+  strikePrice: string | null;
+  expiresAt: Date | null;
   notes: string;
   /** Canonical identity used for de-duplication. */
   importHashKey: string;
@@ -99,6 +110,9 @@ const SYNONYMS: Record<ImportField, string[]> = {
   multiplier: ["multiplier", "pointvalue", "contractsize", "contractmultiplier", "lotsize", "tickvalue"],
   stopPrice: ["stopprice", "stop", "stoploss", "sl", "initialstop", "stopprice1"],
   targetPrice: ["targetprice", "target", "takeprofit", "tp", "profittarget"],
+  optionType: ["optiontype", "putcall", "callput", "putorcall", "callorput", "right", "cp", "pc", "optionkind", "contracttype"],
+  strikePrice: ["strike", "strikeprice", "strikeprc", "exerciseprice", "strk"],
+  expiresAt: ["expiration", "expirationdate", "expiry", "expirydate", "expdate", "expires", "exp", "maturity", "expirationdt", "expdt"],
   notes: ["notes", "note", "comment", "comments", "description", "remarks", "journal", "memo"],
 };
 
@@ -139,6 +153,13 @@ export function parseSide(raw: string): Side | null {
   const v = raw.trim().toLowerCase();
   if (["long", "buy", "b", "l", "bought", "bot", "bto", "buy to open", "buytoopen", "purchase"].includes(v)) return "LONG";
   if (["short", "sell", "s", "sh", "sold", "sld", "sto", "sell short", "sellshort", "sell to open", "selltoopen"].includes(v)) return "SHORT";
+  return null;
+}
+
+export function parseOptionType(raw: string): OptionType | null {
+  const v = raw.trim().toLowerCase().replace(/[^a-z]/g, "");
+  if (["c", "call", "calls"].includes(v)) return "CALL";
+  if (["p", "put", "puts"].includes(v)) return "PUT";
   return null;
 }
 
@@ -195,7 +216,9 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
 
   const symbolRaw = cell(record, mapping, "symbol");
   if (!symbolRaw) return fail("missing symbol");
-  const symbol = symbolRaw.toUpperCase().slice(0, 32);
+  // A symbol that names a contract ("SPY240920C00450000", "SPY 09/20/2024 450 C") becomes an option on the underlying.
+  const contract = parseOptionSymbol(symbolRaw);
+  const symbol = (contract ? contract.underlying : symbolRaw.toUpperCase()).slice(0, 32);
 
   const quantityRaw = cell(record, mapping, "quantity");
   if (!quantityRaw) return fail("missing quantity");
@@ -246,20 +269,51 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
     fees = new Decimal(parsed).abs().toFixed();
   }
 
+  // Option details: from the contract in the symbol, then from explicit columns, which win.
+  let optionType: OptionType | null = contract?.optionType ?? null;
+  let strikePrice: string | null = contract?.strike ?? null;
+  let expiresAt: Date | null = contract ? expirationInstant(contract.expiration) : null;
+  const optionTypeRaw = cell(record, mapping, "optionType");
+  if (optionTypeRaw) {
+    optionType = parseOptionType(optionTypeRaw);
+    if (!optionType) return fail(`unrecognised call/put "${optionTypeRaw}"`);
+  }
+  const strikeRaw = cell(record, mapping, "strikePrice");
+  if (strikeRaw) {
+    const parsed = parseNumber(strikeRaw);
+    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(`invalid strike "${strikeRaw}"`);
+    strikePrice = parsed;
+  }
+  const expiresRaw = cell(record, mapping, "expiresAt");
+  if (expiresRaw) {
+    const parsed = parseFlexibleDate(expiresRaw, { dayFirst: options.dayFirst, timeZone: "UTC" });
+    expiresAt = parsed ? expirationInstant(parsed.toISOString().slice(0, 10)) : null;
+    if (!expiresAt) return fail(`invalid expiration "${expiresRaw}"`);
+  }
+  const optionRow = optionType !== null || strikePrice !== null || expiresAt !== null;
+
   const multiplierRaw = cell(record, mapping, "multiplier");
   let multiplier = options.defaultMultiplier && options.defaultMultiplier.trim() !== "" ? options.defaultMultiplier.trim() : "1";
   if (multiplierRaw) {
     const parsed = parseNumber(multiplierRaw);
     if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(`invalid multiplier "${multiplierRaw}"`);
     multiplier = parsed;
+  } else if (optionRow) {
+    // A contract row without a multiplier of its own is a standard 100-share contract.
+    multiplier = OPTION_MULTIPLIER;
   }
   if (!/^\d*\.?\d+$/.test(multiplier) || new Decimal(multiplier).lessThanOrEqualTo(0)) return fail("default multiplier must be a positive number");
 
-  let assetClass: AssetClass = options.defaultAssetClass ?? "STOCK";
+  let assetClass: AssetClass = optionRow ? "OPTION" : (options.defaultAssetClass ?? "STOCK");
   const assetRaw = cell(record, mapping, "assetClass");
   if (assetRaw) {
     const parsed = parseAssetClass(assetRaw);
     if (parsed) assetClass = parsed;
+  }
+  if (assetClass !== "OPTION") {
+    optionType = null;
+    strikePrice = null;
+    expiresAt = null;
   }
 
   const parseOptional = (field: ImportField): string | null | undefined => {
@@ -312,8 +366,20 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
       rMultiple: r ? r.toFixed() : null,
       stopPrice,
       targetPrice,
+      optionType,
+      strikePrice,
+      expiresAt,
       notes: cell(record, mapping, "notes") ?? "",
-      importHashKey: importHashKey({ symbol, side, quantity, entryPrice, entryAt }),
+      importHashKey: importHashKey({
+        symbol,
+        side,
+        quantity,
+        entryPrice,
+        entryAt,
+        optionType,
+        strikePrice,
+        expiration: expiresAt ? expiresAt.toISOString().slice(0, 10) : null,
+      }),
     },
   };
 }

@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { byAccount, byDayOfWeek, byHoldDuration, byHourOfDay, byInstrument, bySide, bySizeBucket, rDistribution, type BreakdownTrade } from "@/lib/breakdowns";
+import {
+  byAccount,
+  byDayOfWeek,
+  byDaysToExpiration,
+  byHoldDuration,
+  byHourOfDay,
+  byInstrument,
+  byOptionType,
+  bySide,
+  bySizeBucket,
+  optionsVsShares,
+  rDistribution,
+  type BreakdownTrade,
+} from "@/lib/breakdowns";
 
 let n = 0;
 function t(entryAt: string, pnl: string | null, extra: Partial<BreakdownTrade> = {}): BreakdownTrade {
@@ -89,5 +102,37 @@ describe("breakdowns", () => {
   it("returns empty breakdowns for empty input", () => {
     expect(byHourOfDay([], "UTC")).toEqual([]);
     expect(bySizeBucket([]).buckets).toEqual([]);
+  });
+});
+
+describe("option breakdowns", () => {
+  const options = [
+    t("2026-09-01T13:35:00Z", "450", { assetClass: "OPTION", optionType: "CALL", expiresAt: new Date("2026-09-15T12:00:00Z"), rMultiple: "1.125" }), // 14 days out
+    t("2026-09-01T14:00:00Z", "-120", { assetClass: "OPTION", optionType: "PUT", expiresAt: new Date("2026-09-01T12:00:00Z") }), // same day
+    t("2026-09-02T14:00:00Z", "300", { assetClass: "OPTION", optionType: "PUT", expiresAt: new Date("2026-11-20T12:00:00Z") }), // 79 days
+    t("2026-09-03T14:00:00Z", "60", { assetClass: "STOCK" }),
+    t("2026-09-03T15:00:00Z", "-20", { assetClass: "FUTURES" }),
+    t("2026-09-04T15:00:00Z", null, { assetClass: "OPTION", optionType: "CALL", expiresAt: new Date("2026-09-30T12:00:00Z") }), // open, ignored
+  ];
+
+  it("splits calls from puts and options from shares", () => {
+    expect(byOptionType(options).map((b) => [b.label, b.tradeCount, b.netPnl.toFixed()])).toEqual([
+      ["Calls", 1, "450"],
+      ["Puts", 2, "180"],
+    ]);
+    expect(optionsVsShares(options).map((b) => [b.label, b.tradeCount, b.netPnl.toFixed()])).toEqual([
+      ["Options", 3, "630"],
+      ["Shares", 1, "60"],
+      ["Other", 1, "-20"],
+    ]);
+  });
+
+  it("buckets option trades by days to expiration when entered", () => {
+    expect(byDaysToExpiration(options, "America/New_York").map((b) => [b.label, b.tradeCount])).toEqual([
+      ["0 days (expiry day)", 1],
+      ["8 to 30 days", 1],
+      ["31 days or more", 1],
+    ]);
+    expect(byDaysToExpiration(options.filter((o) => o.assetClass !== "OPTION"), "UTC")).toEqual([]);
   });
 });

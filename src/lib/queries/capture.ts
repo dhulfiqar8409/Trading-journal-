@@ -9,6 +9,8 @@ export interface CapturePrefill {
   assetClass: "STOCK" | "OPTION" | "FUTURES" | "FOREX" | "CRYPTO";
   quantity: string;
   multiplier: string;
+  /** Options: the last contract's call/put, so the next one starts the same way. */
+  optionType: "CALL" | "PUT" | null;
 }
 
 export interface DraftDTO {
@@ -23,7 +25,7 @@ export async function loadCapturePrefill(userId: string): Promise<{ prefill: Cap
   const last = await db.trade.findFirst({
     where: { userId },
     orderBy: [{ createdAt: "desc" }],
-    select: { symbol: true, accountId: true, assetClass: true, quantity: true, multiplier: true },
+    select: { symbol: true, accountId: true, assetClass: true, quantity: true, multiplier: true, optionType: true },
   });
   if (!last) return { prefill: null, sizePresets: [] };
   const recent = await db.trade.findMany({
@@ -52,6 +54,7 @@ export async function loadCapturePrefill(userId: string): Promise<{ prefill: Cap
       assetClass: last.assetClass,
       quantity: toPlainString(last.quantity) ?? "",
       multiplier: toPlainString(last.multiplier) ?? "1",
+      optionType: last.optionType,
     },
     sizePresets,
   };

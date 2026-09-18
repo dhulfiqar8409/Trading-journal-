@@ -10,6 +10,7 @@ import type { BudgetDTO } from "@/lib/queries/today";
 import { ASSET_CLASSES } from "@/lib/csv";
 import { formatMoney, formatR } from "@/lib/format";
 import type { ActionState } from "@/lib/form";
+import { expirationKey, OPTION_MULTIPLIER, OPTION_TYPES } from "@/lib/options";
 import { computeTradeMetrics, type Side } from "@/lib/pnl";
 import type { RuleDTO, TagDTO, TradeDTO } from "@/lib/serialize";
 import { toDateTimeLocalValue } from "@/lib/tz";
@@ -105,16 +106,28 @@ export function TradeForm({
 }: TradeFormProps) {
   const { state, onSubmit, pending } = useActionForm(action);
   const quantityRef = useRef<HTMLInputElement>(null);
+  const multiplierRef = useRef<HTMLInputElement>(null);
   const isNew = !initial;
   const seed = initial ?? null;
   const symbolDefault = seed?.symbol ?? prefill?.symbol ?? "";
   const quantityDefault = seed?.quantity ?? prefill?.quantity ?? "";
   const multiplierDefault = seed?.multiplier ?? prefill?.multiplier ?? "1";
   const assetDefault = seed?.assetClass ?? prefill?.assetClass ?? "STOCK";
+  const [assetClass, setAssetClass] = useState<(typeof ASSET_CLASSES)[number]>(assetDefault);
+  const isOption = assetClass === "OPTION";
+  const optionTypeDefault = seed?.optionType ?? prefill?.optionType ?? "CALL";
   function applyPreset(q: string) {
     if (!quantityRef.current) return;
     quantityRef.current.value = q;
     quantityRef.current.form?.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  function changeAssetClass(next: (typeof ASSET_CLASSES)[number]) {
+    setAssetClass(next);
+    // Options are 100-share contracts unless the owner typed a multiplier of their own.
+    const m = multiplierRef.current;
+    if (m && next === "OPTION" && (m.value.trim() === "" || m.value.trim() === "1")) m.value = OPTION_MULTIPLIER;
+    if (m && next !== "OPTION" && m.value.trim() === OPTION_MULTIPLIER) m.value = "1";
+    m?.form?.dispatchEvent(new Event("change", { bubbles: true }));
   }
   const brokenFromState = state && !state.ok ? (state.brokenRules ?? []) : [];
   const brokenInitial = (initial?.ruleEvents ?? []).filter((e) => e.status !== "FOLLOWED");
@@ -196,7 +209,7 @@ export function TradeForm({
         </div>
         <div className="col-span-2 sm:col-span-1">
           <label htmlFor="quantity" className="label">
-            Quantity
+            {isOption ? "Contracts" : "Quantity"}
           </label>
           <input
             ref={quantityRef}
@@ -219,6 +232,50 @@ export function TradeForm({
           ) : null}
           <FieldError state={state} name="quantity" />
         </div>
+        <div>
+          <label htmlFor="assetClass" className="label">
+            Asset class
+          </label>
+          <select id="assetClass" name="assetClass" value={assetClass} onChange={(e) => changeAssetClass(e.target.value as (typeof ASSET_CLASSES)[number])} className="input">
+            {ASSET_CLASSES.map((c) => (
+              <option key={c} value={c}>
+                {ASSET_LABELS[c]}
+              </option>
+            ))}
+          </select>
+        </div>
+        {isOption ? (
+          <>
+            <div>
+              <span className="label">Call or put</span>
+              <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-canvas p-1">
+                {OPTION_TYPES.map((type) => (
+                  <label key={type} className="cursor-pointer">
+                    <input type="radio" name="optionType" value={type} defaultChecked={optionTypeDefault === type} className="peer sr-only" />
+                    <span className="block rounded-md py-1.5 text-center text-sm font-medium text-muted transition-colors peer-checked:bg-surface-3 peer-checked:text-ink peer-focus-visible:ring-2 peer-focus-visible:ring-signature/40">
+                      {type === "CALL" ? "Call" : "Put"}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <FieldError state={state} name="optionType" />
+            </div>
+            <div>
+              <label htmlFor="strikePrice" className="label">
+                Strike
+              </label>
+              <input id="strikePrice" name="strikePrice" inputMode="decimal" defaultValue={initial?.strikePrice ?? ""} required className={fieldClass(state, "strikePrice")} />
+              <FieldError state={state} name="strikePrice" />
+            </div>
+            <div>
+              <label htmlFor="expiresAt" className="label">
+                Expiration
+              </label>
+              <input id="expiresAt" name="expiresAt" type="date" defaultValue={initial?.expiresAt ? expirationKey(initial.expiresAt) : ""} required className={fieldClass(state, "expiresAt")} />
+              <FieldError state={state} name="expiresAt" />
+            </div>
+          </>
+        ) : null}
         <div>
           <label htmlFor="entryPrice" className="label">
             Entry price
@@ -297,23 +354,11 @@ export function TradeForm({
               <FieldError state={state} name="accountId" />
             </div>
             <div>
-              <label htmlFor="assetClass" className="label">
-                Asset class
-              </label>
-              <select id="assetClass" name="assetClass" defaultValue={assetDefault} className="input">
-                {ASSET_CLASSES.map((c) => (
-                  <option key={c} value={c}>
-                    {ASSET_LABELS[c]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
               <label htmlFor="multiplier" className="label">
                 Multiplier
               </label>
-              <input id="multiplier" name="multiplier" inputMode="decimal" defaultValue={multiplierDefault} className={fieldClass(state, "multiplier")} />
-              <p className="hint">Point value (futures) or contract size (options).</p>
+              <input ref={multiplierRef} id="multiplier" name="multiplier" inputMode="decimal" defaultValue={multiplierDefault} className={fieldClass(state, "multiplier")} />
+              <p className="hint">{isOption ? "Shares per contract; 100 for standard contracts." : "Point value (futures) or contract size (options)."}</p>
               <FieldError state={state} name="multiplier" />
             </div>
             <div>

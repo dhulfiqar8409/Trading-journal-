@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { guessMapping, parseAssetClass, parseImportRow, parseNumber, parseSide, type ColumnMapping } from "@/lib/csv";
+import { guessMapping, parseAssetClass, parseImportRow, parseNumber, parseOptionType, parseSide, type ColumnMapping } from "@/lib/csv";
 import { importHash, importHashKey } from "@/lib/import-hash";
 
 describe("guessMapping", () => {
@@ -42,6 +42,14 @@ describe("guessMapping", () => {
 
   it("returns an empty mapping for unknown headers", () => {
     expect(guessMapping(["foo", "bar"])).toEqual({});
+  });
+
+  it("recognises option columns", () => {
+    const m = guessMapping(["Symbol", "Put/Call", "Strike", "Expiration Date", "Qty", "Price", "Date"]);
+    expect(m.optionType).toBe("Put/Call");
+    expect(m.strikePrice).toBe("Strike");
+    expect(m.expiresAt).toBe("Expiration Date");
+    expect(m.symbol).toBe("Symbol");
   });
 });
 
@@ -174,6 +182,55 @@ describe("parseImportRow", () => {
       timeZone: "America/New_York",
     });
     expect(result.ok && result.row.entryAt.toISOString()).toBe("2024-03-12T13:31:00.000Z");
+  });
+
+  it("reads a contract out of the symbol and makes the row a 100-share option", () => {
+    const result = parseImportRow({ ...base, Symbol: "SPY240920C00450000" }, mapping);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.row.symbol).toBe("SPY");
+    expect(result.row.assetClass).toBe("OPTION");
+    expect(result.row.optionType).toBe("CALL");
+    expect(result.row.strikePrice).toBe("450");
+    expect(result.row.expiresAt?.toISOString()).toBe("2024-09-20T12:00:00.000Z");
+    expect(result.row.multiplier).toBe("100");
+    expect(result.row.pnl).toBe("24998.8");
+    expect(result.row.importHashKey).toBe("SPY|LONG|100|150|2024-03-12T09:31:00.000Z|CALL|450|2024-09-20");
+    // A multiplier column on the row wins over the contract default.
+    const own = parseImportRow({ ...base, Symbol: "SPY 09/20/2024 450 P", Mult: "10" }, { ...mapping, multiplier: "Mult" });
+    expect(own.ok && own.row.multiplier).toBe("10");
+    expect(own.ok && own.row.optionType).toBe("PUT");
+  });
+
+  it("takes option details from explicit columns, which win over the symbol", () => {
+    const m: ColumnMapping = { ...mapping, optionType: "Right", strikePrice: "Strike", expiresAt: "Expiry" };
+    const result = parseImportRow({ ...base, Symbol: "AAPL", Right: "Put", Strike: "$220.00", Expiry: "10/18/2024" }, m);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.row.assetClass).toBe("OPTION");
+    expect(result.row.optionType).toBe("PUT");
+    expect(result.row.strikePrice).toBe("220");
+    expect(result.row.expiresAt?.toISOString()).toBe("2024-10-18T12:00:00.000Z");
+    expect(result.row.multiplier).toBe("100");
+    const overridden = parseImportRow({ ...base, Symbol: "SPY240920C00450000", Right: "P", Strike: "", Expiry: "" }, m);
+    expect(overridden.ok && overridden.row.optionType).toBe("PUT");
+    expect(overridden.ok && overridden.row.strikePrice).toBe("450");
+    expect(parseImportRow({ ...base, Right: "maybe" }, m)).toEqual({ ok: false, error: 'unrecognised call/put "maybe"' });
+    expect(parseImportRow({ ...base, Strike: "0" }, m)).toEqual({ ok: false, error: 'invalid strike "0"' });
+    expect(parseImportRow({ ...base, Expiry: "someday" }, m)).toEqual({ ok: false, error: 'invalid expiration "someday"' });
+    // Plain rows are untouched: no option fields, the default multiplier.
+    const plain = parseImportRow(base, m);
+    expect(plain.ok && plain.row.optionType).toBeNull();
+    expect(plain.ok && plain.row.multiplier).toBe("1");
+    expect(plain.ok && plain.row.importHashKey).toBe("AAPL|LONG|100|150|2024-03-12T09:31:00.000Z");
+  });
+
+  it("parses call and put cells", () => {
+    expect(parseOptionType("Call")).toBe("CALL");
+    expect(parseOptionType("c")).toBe("CALL");
+    expect(parseOptionType("PUTS")).toBe("PUT");
+    expect(parseOptionType("p.")).toBe("PUT");
+    expect(parseOptionType("straddle")).toBeNull();
   });
 
   it("reports row errors", () => {
