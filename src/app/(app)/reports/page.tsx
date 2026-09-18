@@ -9,7 +9,7 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { formatDateKey, formatMoney, formatPercent, formatR } from "@/lib/format";
 import { loadAdherenceReport, loadBreakdowns, loadEdgeDecay, loadLeaks, type GroupStatsDTO } from "@/lib/queries/reports";
-import { isoWeekLabel } from "@/lib/weeks";
+import { isoWeekKey, isoWeekLabel } from "@/lib/weeks";
 
 export const metadata = { title: "Reports" };
 
@@ -55,9 +55,14 @@ export default async function ReportsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="page-title">Reports</h1>
-        <p className="mt-1 text-sm text-muted">Process first: how well the rules were followed and what breaking them cost.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="page-title">Reports</h1>
+          <p className="mt-1 text-sm text-muted">Process first: how well the rules were followed and what breaking them cost.</p>
+        </div>
+        <Link href={`/reports/week/${isoWeekKey(new Date(), user.timeZone)}`} className="btn">
+          This week in review
+        </Link>
       </div>
 
       <section className="card card-pad min-w-0" aria-label="Leak finder">

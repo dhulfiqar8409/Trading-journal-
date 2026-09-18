@@ -4,10 +4,11 @@ import { setupAction } from "@/actions/auth";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TimeZoneSelect } from "@/components/timezone-select";
 
-export function SetupForm() {
+export function SetupForm({ token }: { token?: string }) {
   const { state, onSubmit, pending } = useActionForm(setupAction);
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      {token ? <input type="hidden" name="token" value={token} /> : null}
       <div>
         <label htmlFor="name" className="label">
           Name

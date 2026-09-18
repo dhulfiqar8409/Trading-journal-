@@ -47,6 +47,7 @@ export const setupSchema = z
     password: passwordSchema,
     confirmPassword: z.string(),
     timeZone: z.preprocess(emptyToUndefined, timeZoneSchema.optional()),
+    token: z.preprocess(emptyToUndefined, z.string().max(200).optional()),
   })
   .refine((d) => d.password === d.confirmPassword, { message: "Passwords do not match", path: ["confirmPassword"] });
 

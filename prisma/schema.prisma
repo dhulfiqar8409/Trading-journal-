@@ -273,3 +273,14 @@ model ShareLink {
 
   @@index([userId])
 }
+
+/** A failed sign-in, kept for the lockout window only. */
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  ip        String
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ip, createdAt])
+}

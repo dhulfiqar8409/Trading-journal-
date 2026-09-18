@@ -11,24 +11,34 @@ interface with green and red reserved for the sign of P&L.
 
 ### Features
 
+- **Two-tap capture**: `/trades/new` is prefilled from the last trade with size presets and the
+  planned stop up front; one tap saves an open trade and the details can wait. Notes take
+  dictation where the browser supports it.
 - **Trades**: stocks, options, futures, forex and crypto; long or short; quantity, entry and exit,
-  multiplier (point value or contract size), fees, stop and target, rating, markdown notes and a
-  mistakes log. Net P&L and the R-multiple are recomputed on every save.
-- **Dashboard**: net P&L, win rate, profit factor, expectancy, average win and loss, max drawdown,
-  trade count and streak, with a 7d / 30d / 90d / YTD / all-time / custom range selector; an
-  equity curve, daily P&L bars, a monthly calendar heatmap, top symbols, P&L by tag and recent
-  trades. Every chart has a table view.
-- **Trade list**: filter by date range, symbol, side, status, tag and account; sort by any column;
-  paginated.
-- **Tags**: strategy, setup, mistake and custom tags with colours, attached to any trade.
-- **Screenshots**: image attachments per trade, stored on disk outside the web root and served
-  only to the signed-in owner.
-- **CSV import**: upload a broker export, map columns (auto-detected from common headers), preview
-  the parsed rows and import with a report of inserted rows, duplicates skipped and row errors.
-- **Accounts**: several broker accounts with their own currency; one is the default.
-- **Settings**: name, time zone, password change and a CSV export of every trade.
+  multiplier, fees, stop and target, rating, markdown notes, a mistakes log, tags and screenshots.
+  Net P&L, planned risk and the R-multiple are recomputed on every save.
+- **R first**: results read in R-multiples with currency one tap away (or the other way round, per
+  the setting); trades without a stop say so and stay out of R statistics.
+- **Rules and the Tilt Ledger**: daily trade caps, daily loss caps in R or currency, time windows,
+  stop required, max loss per trade, max size and hand-checked custom rules, evaluated on every
+  save. Breaking one needs a one-line justification, and every break lands in the ledger.
+- **Today**: pre-market check-in (plan, mood, sleep, focus, energy), a plan budget bar that turns
+  amber at 70% and red at 100%, trades so far, rule events and the end-of-day review.
+- **Dashboard**: KPI tiles, equity curve, daily bars, calendar heatmap, Edge Score with a radar and
+  trend, the three-curve "what mistakes cost" chart, mistake costs, top symbols, results by tag,
+  process streak and recent trades. Every chart has a table view.
+- **Reports**: the leak finder with one-tap "Add rule", adherence by week, results split by rules
+  followed versus broken, cost per rule, edge decay per setup, breakdowns by hour, weekday, hold
+  time, size, R distribution, instrument, side and account, results by pre-open state, and a
+  weekly review card with a share image.
+- **Installable**: a PWA with shortcuts, offline shell and a share target that turns a screenshot
+  from the phone's share sheet into a draft trade.
+- **Sharing and ownership**: revocable read-only links for a trade or a week, saved CSV import
+  mappings per broker, and full exports as JSON and CSV.
 - **Single owner**: the first visit to `/setup` creates the only account; afterwards the page
   redirects to sign-in. Every record is still scoped by user id.
+
+The full scope is described in [`docs/product-spec.md`](docs/product-spec.md).
 
 ### Stack
 
@@ -38,7 +48,8 @@ end-to-end smoke test. The Docker image runs the standalone Next.js server.
 
 ## Local development
 
-Requirements: Node.js 22, npm 10 and a PostgreSQL 16 server.
+Requirements: Node.js 20.19 or newer (22 recommended), npm 10 and a PostgreSQL 16 server. The
+runtime uses no native Node add-ons.
 
 ```bash
 # 1. Install dependencies (also generates the Prisma client)
@@ -56,6 +67,9 @@ npm run seed                    # prints the demo credentials; never runs in pro
 # 5. Start the dev server
 npm run dev                     # http://localhost:3000 -> /setup on first run
 ```
+
+`next build` fetches the two Google Fonts once and self-hosts them. Behind a proxy that Node's
+`fetch` does not pick up automatically, run the build with `NODE_USE_ENV_PROXY=1`.
 
 A local PostgreSQL role can be created with
 `createuser -P darkpools && createdb -O darkpools darkpools`, matching the default `DATABASE_URL`.
@@ -85,12 +99,16 @@ All variables are documented in [`.env.example`](.env.example).
 | `DATABASE_URL` | yes | PostgreSQL connection string used by Prisma. In docker compose the app service always connects to the bundled `db` service, so this value only matters outside Docker. |
 | `SESSION_SECRET` | yes | Secret that signs session cookies. At least 32 characters; `openssl rand -base64 48` makes a good one. |
 | `UPLOAD_DIR` | no | Directory for trade screenshots. Defaults to `./uploads`; the Docker image uses `/app/uploads`. |
+| `SETUP_TOKEN` | no | When set, the first-run page `/setup` answers 403 unless the request carries `?token=<value>` (the value is compared in constant time and passed through the form). Once the owner exists, `/setup` redirects to sign-in regardless. Unset keeps `/setup` open until the account is created. |
 | `POSTGRES_PASSWORD` | compose | Password of the `darkpools` database role created by the `db` service and used to build the app's `DATABASE_URL`. |
 | `APP_PORT` | compose | Host port (bound to 127.0.0.1) that docker compose publishes the app on. Defaults to 3300. |
 | `SEED_EMAIL`, `SEED_PASSWORD` | seed only | Credentials of the demo owner created by `npm run seed`. |
 
 Sessions are JWTs signed with `SESSION_SECRET`, stored in an HttpOnly, SameSite=Lax cookie
-(Secure in production) that expires after 30 days.
+(Secure in production) that expires after 30 days. Sign-in is rate limited: five failed attempts
+within fifteen minutes for an email or for a client address (taken from `X-Real-IP`, then the first
+`X-Forwarded-For` entry, as set by the reverse proxy) block further attempts for the rest of the
+window with the same generic message; a successful sign-in clears the counter.
 
 ## Tests
 
@@ -104,8 +122,10 @@ npm run build
 
 The end-to-end smoke test drives the real application: first-run setup (or sign-in when the owner
 exists), creating a trade, the trade list and detail pages, the dashboard and its charts, a CSV
-import with a duplicate row, a 390px-wide layout check and the sign-out lock-out. Start the app
-against a database first, then:
+import with a duplicate row, the Today check-in and budget bar, a rule-breaking trade with its
+justification and ledger entry, the PWA assets and two-tap capture, the weekly review with a share
+link, import presets and exports, 390px-wide layout checks on every page and the sign-out
+lock-out. Start the app against a database first, then:
 
 ```bash
 E2E_BASE_URL=http://127.0.0.1:3000 npm run e2e
@@ -153,6 +173,9 @@ published port; the compose file deliberately contains no proxy) and create the 
 - CSV imports are de-duplicated by a hash of symbol, side, quantity, entry price and entry time;
   a file that only carries a P&L column gets its exit price derived so the stored figures stay
   consistent with the formula above.
+- Planned risk = |entry − stop| × quantity × multiplier is the size of 1R. The Edge Score, the
+  leak finder, edge decay and the three-curve chart are documented in
+  [`docs/product-spec.md`](docs/product-spec.md).
 
 ## Server setup
 

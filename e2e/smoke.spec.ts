@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
+import { isoWeekKeyOfDateKey } from "../src/lib/weeks";
 
 /**
  * Drives the real app end to end: first-run setup (or login when the owner
@@ -168,6 +169,7 @@ test("phone-width layout has no horizontal scroll", async () => {
     ["16-mobile-today", "/today"],
     ["17-mobile-rules", "/rules"],
     ["18-mobile-reports", "/reports"],
+    ["22-mobile-week", `/reports/week/${isoWeekKeyOfDateKey(tradeDate)}`],
   ] as const) {
     await page.goto(url);
     await expect(page.locator("nav[aria-label='Main']").last()).toBeVisible();
@@ -297,6 +299,66 @@ test("installable app assets and two-tap capture", async () => {
   await page.getByText("More details").click();
   await expect(page.locator("#notes")).toBeVisible();
   await shot("19-quick-capture");
+});
+
+test("weekly review, share links, import presets and exports", async ({ browser }) => {
+  const weekKey = isoWeekKeyOfDateKey(tradeDate);
+  await page.goto(`/reports/week/${weekKey}`);
+  await expect(page.getByRole("heading", { name: "Week in review" })).toBeVisible();
+  const card = page.locator("section[aria-label='Share image']");
+  await expect(card).toBeVisible();
+  const image = card.locator("img");
+  await expect.poll(async () => image.evaluate((el) => (el as HTMLImageElement).naturalWidth), { timeout: 30_000 }).toBeGreaterThan(0);
+  await page.getByRole("link", { name: "Hide dollars" }).click();
+  await expect(page).toHaveURL(/hide=1/);
+  await shot("20-week-review");
+
+  // A share link works without a session and stops working once revoked.
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareInput = page.getByRole("textbox", { name: "Share link" }).first();
+  await expect(shareInput).toBeVisible();
+  const url = await shareInput.inputValue();
+  expect(url).toMatch(/\/share\/[A-Za-z0-9_-]{16,}$/);
+  const anon = await browser.newContext();
+  const visitor = await anon.newPage();
+  await visitor.goto(url);
+  await expect(visitor.getByText("read-only")).toBeVisible();
+  await expect(visitor.getByText("Week in review")).toBeVisible();
+  await visitor.screenshot({ path: path.join(shotsDir, "21-share-week.png"), fullPage: true });
+  await page.getByRole("button", { name: "Revoke" }).first().click();
+  await expect(page.getByText("No share links yet")).toBeVisible();
+  await visitor.goto(url);
+  await expect(visitor.getByRole("heading", { name: "Page not found" })).toBeVisible();
+  await anon.close();
+
+  // Import mappings can be saved under a broker name and applied again.
+  const csv = ["Contract,B/S,Qty,Price,Timestamp", `${csvSymbol}P,Buy,1,100,2025-09-12 09:30`].join("\n");
+  await page.goto("/import");
+  await page.setInputFiles("input[type=file]", { name: "broker.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+  await expect(page.locator("#map-symbol")).toHaveValue("Contract");
+  await expect(page.locator("#map-side")).toHaveValue("B/S");
+  await expect(page.locator("#map-entryPrice")).toHaveValue("Price");
+  await page.fill("#preset-name", `Broker ${stamp}`);
+  await page.getByRole("button", { name: "Save mapping" }).click();
+  await expect(page.getByRole("status")).toContainText(`Saved “Broker ${stamp}”`);
+  await page.selectOption("#map-symbol", "");
+  await page.selectOption("#preset-apply", { label: `Broker ${stamp}` });
+  await expect(page.locator("#map-symbol")).toHaveValue("Contract");
+  await page.getByRole("button", { name: `Delete preset Broker ${stamp}` }).click();
+  await expect(page.getByRole("button", { name: `Delete preset Broker ${stamp}` })).toHaveCount(0);
+
+  // Full exports are one request away.
+  const exported = await page.evaluate(async () => {
+    const all = await fetch("/api/export/all");
+    const json = (await all.json()) as { format: string; trades: unknown[]; days: unknown[]; rules: unknown[] };
+    const days = await fetch("/api/export/days");
+    return { status: all.status, format: json.format, hasTrades: Array.isArray(json.trades), daysStatus: days.status, daysType: days.headers.get("content-type") };
+  });
+  expect(exported.status).toBe(200);
+  expect(exported.format).toBe("darkpools-export");
+  expect(exported.hasTrades).toBe(true);
+  expect(exported.daysStatus).toBe(200);
+  expect(exported.daysType).toContain("text/csv");
 });
 
 test("delete this run's trades through the UI", async () => {

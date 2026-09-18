@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { deleteAttachmentAction, deleteTradeAction, updateTradeAction } from "@/actions/trades";
@@ -5,6 +6,7 @@ import { AttachmentUploader } from "@/components/attachments";
 import { ConfirmSubmit } from "@/components/confirm-button";
 import { Markdown } from "@/components/markdown";
 import { PnlFigure } from "@/components/figure";
+import { ShareLinks } from "@/components/share-links";
 import { RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
 import { TagChip } from "@/components/tag-chip";
 import { TradeForm } from "@/components/trade-form";
@@ -45,11 +47,14 @@ export default async function TradeDetailPage({
   const record = await getTrade(user.id, id);
   if (!record) notFound();
   const trade = serializeTrade(record);
-  const [accounts, tags, customRules] = await Promise.all([
+  const [accounts, tags, customRules, shareLinks, headerList] = await Promise.all([
     db.account.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] }),
     db.tag.findMany({ where: { userId: user.id }, orderBy: [{ kind: "asc" }, { name: "asc" }] }),
     db.rule.findMany({ where: { userId: user.id, active: true, kind: "CUSTOM" }, orderBy: { createdAt: "asc" } }),
+    db.shareLink.findMany({ where: { userId: user.id, kind: "TRADE", targetId: id, revokedAt: null }, orderBy: { createdAt: "desc" } }),
+    headers(),
   ]);
+  const origin = `${headerList.get("x-forwarded-proto") ?? "http"}://${headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3000"}`;
 
   const pnlInput = {
     side: trade.side,
@@ -183,6 +188,11 @@ export default async function TradeDetailPage({
           <AttachmentUploader tradeId={trade.id} />
         </section>
       </div>
+
+      <section className="card card-pad" aria-label="Share">
+        <h2 className="mb-2 text-sm font-semibold">Share</h2>
+        <ShareLinks kind="TRADE" targetId={trade.id} returnTo={`/trades/${trade.id}`} origin={origin} links={shareLinks.map((l) => ({ id: l.id, token: l.token, hideDollars: l.hideDollars, createdAt: l.createdAt.toISOString() }))} />
+      </section>
 
       <details className="card" open={edit === "1"}>
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold sm:px-5">Edit trade</summary>

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ImportWizard } from "@/components/import-wizard";
+import { ImportWizard, type ImportPresetDTO } from "@/components/import-wizard";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 
@@ -7,7 +7,11 @@ export const metadata = { title: "Import" };
 
 export default async function ImportPage() {
   const user = await requireUser();
-  const accounts = await db.account.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] });
+  const [accounts, presetRows] = await Promise.all([
+    db.account.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { name: "asc" }] }),
+    db.importPreset.findMany({ where: { userId: user.id }, orderBy: { name: "asc" } }),
+  ]);
+  const presets = presetRows.map((p) => ({ id: p.id, name: p.name, mapping: p.mapping as ImportPresetDTO["mapping"], options: p.options as ImportPresetDTO["options"] }));
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -26,6 +30,7 @@ export default async function ImportPage() {
         <ImportWizard
           accounts={accounts.map((a) => ({ id: a.id, name: a.name, currency: a.currency, isDefault: a.isDefault }))}
           timeZone={user.timeZone}
+          presets={presets}
         />
       )}
     </div>

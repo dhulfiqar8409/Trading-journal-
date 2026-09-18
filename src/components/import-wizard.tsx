@@ -16,9 +16,19 @@ interface ImportReport {
   errors: { row: number; message: string }[];
 }
 
+export interface ImportPresetDTO {
+  id: string;
+  name: string;
+  mapping: ColumnMapping;
+  options: { defaultAssetClass?: string; defaultMultiplier?: string; dayFirst?: boolean; timeZone?: string };
+}
+
 const MAX_ROWS = 10000;
 
-export function ImportWizard({ accounts, timeZone }: { accounts: AccountOption[]; timeZone: string }) {
+export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] }: { accounts: AccountOption[]; timeZone: string; presets?: ImportPresetDTO[] }) {
+  const [presets, setPresets] = useState<ImportPresetDTO[]>(initialPresets);
+  const [presetName, setPresetName] = useState("");
+  const [presetMessage, setPresetMessage] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
@@ -54,6 +64,48 @@ export function ImportWizard({ accounts, timeZone }: { accounts: AccountOption[]
 
   const currency = accounts.find((a) => a.id === accountId)?.currency ?? "USD";
   const missingRequired = IMPORT_FIELDS.filter((f) => FIELD_INFO[f].required && !mapping[f]);
+
+  function applyPreset(id: string) {
+    const preset = presets.find((p) => p.id === id);
+    if (!preset) return;
+    const valid: ColumnMapping = {};
+    for (const [field, header] of Object.entries(preset.mapping) as [keyof ColumnMapping, string][]) {
+      if (headers.includes(header)) valid[field] = header;
+    }
+    setMapping(valid);
+    if (preset.options.defaultAssetClass && (ASSET_CLASSES as readonly string[]).includes(preset.options.defaultAssetClass)) {
+      setDefaultAssetClass(preset.options.defaultAssetClass as (typeof ASSET_CLASSES)[number]);
+    }
+    if (preset.options.defaultMultiplier) setDefaultMultiplier(preset.options.defaultMultiplier);
+    setDayFirst(!!preset.options.dayFirst);
+    setZone(preset.options.timeZone && preset.options.timeZone !== "UTC" ? "user" : "UTC");
+    const missing = Object.keys(preset.mapping).length - Object.keys(valid).length;
+    setPresetMessage(missing ? `Applied “${preset.name}”; ${missing} column${missing === 1 ? "" : "s"} from the preset ${missing === 1 ? "is" : "are"} not in this file.` : `Applied “${preset.name}”.`);
+  }
+
+  async function savePreset() {
+    const name = presetName.trim();
+    if (!name) return;
+    setPresetMessage(null);
+    const res = await fetch("/api/import/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, mapping, options }),
+    });
+    const data = (await res.json().catch(() => null)) as (ImportPresetDTO & { error?: string }) | null;
+    if (!res.ok || !data) {
+      setPresetMessage(data?.error ?? "Could not save the mapping.");
+      return;
+    }
+    setPresets((list) => [...list.filter((p) => p.name !== data.name), data].sort((a, b) => a.name.localeCompare(b.name)));
+    setPresetName("");
+    setPresetMessage(`Saved “${data.name}”.`);
+  }
+
+  async function deletePreset(id: string) {
+    const res = await fetch(`/api/import/presets/${id}`, { method: "DELETE" });
+    if (res.ok) setPresets((list) => list.filter((p) => p.id !== id));
+  }
 
   function loadFile(file: File | null) {
     setReport(null);
@@ -132,7 +184,24 @@ export function ImportWizard({ accounts, timeZone }: { accounts: AccountOption[]
       {rows.length > 0 ? (
         <>
           <section className="card card-pad">
-            <h2 className="text-sm font-semibold">2. Map columns</h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">2. Map columns</h2>
+              {presets.length ? (
+                <div className="flex items-center gap-2">
+                  <label htmlFor="preset-apply" className="text-xs text-muted">
+                    Saved mapping
+                  </label>
+                  <select id="preset-apply" className="input w-auto py-1 text-xs" defaultValue="" onChange={(e) => e.target.value && applyPreset(e.target.value)}>
+                    <option value="">Choose…</option>
+                    {presets.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </div>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {IMPORT_FIELDS.map((field) => (
                 <div key={field}>
@@ -219,6 +288,35 @@ export function ImportWizard({ accounts, timeZone }: { accounts: AccountOption[]
                 </div>
                 <p className="hint">Zone for times without an offset.</p>
               </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-line pt-3">
+              <div className="min-w-48 flex-1">
+                <label htmlFor="preset-name" className="label">
+                  Save this mapping as
+                </label>
+                <input id="preset-name" className="input" placeholder="Broker name, e.g. Tradovate" value={presetName} maxLength={60} onChange={(e) => setPresetName(e.target.value)} />
+              </div>
+              <button type="button" className="btn" disabled={!presetName.trim()} onClick={savePreset}>
+                Save mapping
+              </button>
+              {presets.length ? (
+                <ul className="flex flex-wrap gap-1">
+                  {presets.map((p) => (
+                    <li key={p.id} className="badge gap-1.5">
+                      {p.name}
+                      <button type="button" className="text-muted hover:text-loss" aria-label={`Delete preset ${p.name}`} onClick={() => deletePreset(p.id)}>
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {presetMessage ? (
+                <p role="status" className="basis-full text-xs text-ink-2">
+                  {presetMessage}
+                </p>
+              ) : null}
             </div>
           </section>
 
