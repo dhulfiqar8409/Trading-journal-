@@ -5,8 +5,10 @@ import { CheckInForm, JustifyForm, ReviewForm } from "@/components/day-forms";
 import { ChevronLeftIcon, ChevronRightIcon } from "@/components/icons";
 import { Pnl, RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
 import { TagChip } from "@/components/tag-chip";
+import { StreakCard } from "@/components/streak-card";
 import { requireUser } from "@/lib/auth";
 import { formatDateKey, formatDateTime } from "@/lib/format";
+import { loadStreaks } from "@/lib/queries/streaks";
 import { loadToday } from "@/lib/queries/today";
 import { flattenSearchParams, type SearchParams } from "@/lib/search-params";
 
@@ -24,7 +26,7 @@ function StatePill({ label, value }: { label: string; value: number | null }) {
 export default async function TodayPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const user = await requireUser();
   const raw = flattenSearchParams(await searchParams);
-  const data = await loadToday(user.id, user.timeZone, raw.date);
+  const [data, streaks] = await Promise.all([loadToday(user.id, user.timeZone, raw.date), loadStreaks(user.id, user.timeZone)]);
   const { day, budget } = data;
   const activeRules = data.rules.filter((r) => r.active);
   const brokenEvents = data.events;
@@ -185,6 +187,8 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
           </form>
         ) : null}
       </section>
+
+      <StreakCard data={streaks} />
 
       <section className="card card-pad" aria-label="Review">
         <div className="mb-3 flex items-baseline justify-between">

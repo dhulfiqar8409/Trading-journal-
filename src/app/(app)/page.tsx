@@ -9,9 +9,11 @@ import { PnlFigure } from "@/components/figure";
 import { StatTile } from "@/components/kpi";
 import { Pnl, SideBadge, StatusBadge } from "@/components/pnl";
 import { RangeSelector } from "@/components/range-selector";
+import { StreakCard } from "@/components/streak-card";
 import { requireUser } from "@/lib/auth";
 import { formatDateKey, formatMoney, formatPercent, formatR, formatRatio, formatShortDate } from "@/lib/format";
 import { loadDashboard, resolveMonth, resolveRange } from "@/lib/queries/dashboard";
+import { loadStreaks } from "@/lib/queries/streaks";
 import { flattenSearchParams, withParams, type SearchParams } from "@/lib/search-params";
 
 export const metadata = { title: "Dashboard" };
@@ -21,7 +23,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   const raw = flattenSearchParams(await searchParams);
   const range = resolveRange(raw, user.timeZone);
   const month = resolveMonth(raw.month, range, user.timeZone);
-  const data = await loadDashboard(user.id, user.timeZone, range, month);
+  const [data, streaks] = await Promise.all([loadDashboard(user.id, user.timeZone, range, month), loadStreaks(user.id, user.timeZone)]);
   const s = data.summary;
   const currency = data.currency;
   const mode = user.displayMode;
@@ -311,6 +313,8 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           <h2 className="mb-2 text-sm font-semibold">Calendar</h2>
           <CalendarHeatmap calendar={data.calendar} currency={currency} hrefFor={(m) => `/${withParams(raw, { month: m })}`} />
         </section>
+
+        <StreakCard data={streaks} compact />
 
         <section className="card card-pad min-w-0 overflow-x-auto">
           <h2 className="mb-2 text-sm font-semibold">Top symbols</h2>

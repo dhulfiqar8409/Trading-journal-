@@ -1,11 +1,14 @@
 import Link from "next/link";
+import { BucketTable } from "@/components/bucket-table";
 import { EdgeDecayChart } from "@/components/charts/edge-decay";
+import { RHistogram } from "@/components/charts/r-histogram";
 import { WeeklyAdherenceChart } from "@/components/charts/weekly-adherence";
+import { PnlFigure } from "@/components/figure";
 import { Pnl, RMultiple } from "@/components/pnl";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { formatDateKey, formatMoney, formatPercent, formatR } from "@/lib/format";
-import { loadAdherenceReport, loadEdgeDecay, type GroupStatsDTO } from "@/lib/queries/reports";
+import { loadAdherenceReport, loadBreakdowns, loadEdgeDecay, loadLeaks, type GroupStatsDTO } from "@/lib/queries/reports";
 import { isoWeekLabel } from "@/lib/weeks";
 
 export const metadata = { title: "Reports" };
@@ -39,12 +42,15 @@ function SplitColumn({ title, stats, currency }: { title: string; stats: GroupSt
 
 export default async function ReportsPage() {
   const user = await requireUser();
-  const [report, account, decay] = await Promise.all([
+  const [report, account, decay, leaks, breakdowns] = await Promise.all([
     loadAdherenceReport(user.id, user.timeZone),
     db.account.findFirst({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }], select: { currency: true } }),
     loadEdgeDecay(user.id),
+    loadLeaks(user.id, user.timeZone),
+    loadBreakdowns(user.id, user.timeZone),
   ]);
   const currency = account?.currency ?? "USD";
+  const mode = user.displayMode;
   const flagged = decay.filter((d) => d.crossedBelowZero);
 
   return (
@@ -53,6 +59,43 @@ export default async function ReportsPage() {
         <h1 className="text-xl font-semibold tracking-tight">Reports</h1>
         <p className="mt-1 text-sm text-muted">Process first: how well the rules were followed and what breaking them cost.</p>
       </div>
+
+      <section className="card card-pad min-w-0" aria-label="Leak finder">
+        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold">Leak finder</h2>
+          <p className="text-xs text-muted">Computed from your closed trades; each finding needs at least 5 trades on both sides</p>
+        </div>
+        {leaks.length === 0 ? (
+          <p className="text-sm text-muted">{breakdowns.closedCount < 10 ? "Needs more closed trades before patterns mean anything." : "No leak stands out. Keep logging."}</p>
+        ) : (
+          <ol className="divide-y divide-line">
+            {leaks.map((f, i) => (
+              <li key={f.key} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                    <span className="num text-muted">{i + 1}.</span>
+                    {f.title}
+                    <span className={`badge ${f.kind === "opportunity" ? "border-accent/40 text-accent-strong" : ""}`}>{f.kind === "opportunity" ? "Opportunity" : "Leak"}</span>
+                  </p>
+                  <p className="mt-0.5 text-sm text-ink-2">{f.description}</p>
+                  <p className="mt-1 text-xs text-muted">
+                    {f.sampleSize} trade{f.sampleSize === 1 ? "" : "s"} · expectancy {formatMoney(f.groupExpectancy, { currency, signed: true })}
+                    {f.restExpectancy !== null ? ` vs ${formatMoney(f.restExpectancy, { currency, signed: true })} for the rest` : ""}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3 sm:flex-col sm:items-end">
+                  <PnlFigure pnl={f.impactPnl} r={f.impactR} currency={currency} mode={mode} className="text-lg font-semibold" noStopLabel="—" />
+                  {f.addRuleHref ? (
+                    <Link href={f.addRuleHref} className="btn btn-sm">
+                      Add rule
+                    </Link>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
 
       <section className="card card-pad min-w-0" aria-label="Adherence">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
@@ -209,6 +252,99 @@ export default async function ReportsPage() {
             </table>
           </details>
         ) : null}
+      </section>
+
+      <section className="card card-pad min-w-0" aria-label="Breakdowns">
+        <h2 className="mb-1 text-sm font-semibold">Breakdowns</h2>
+        <p className="mb-3 text-xs text-muted">All closed trades, by when, how long, how big and what. Tap a figure to switch units.</p>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Hour of day</h3>
+            <BucketTable rows={breakdowns.hour} currency={currency} label="Entry hour" mode={mode} />
+          </div>
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Day of week</h3>
+            <BucketTable rows={breakdowns.weekday} currency={currency} label="Day" mode={mode} />
+          </div>
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Hold duration</h3>
+            <BucketTable rows={breakdowns.hold} currency={currency} label="Held" mode={mode} />
+          </div>
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+              Position size <span className="font-normal normal-case">(by {breakdowns.size.basis === "risk" ? "planned risk" : "notional value"}, tertiles)</span>
+            </h3>
+            <BucketTable rows={breakdowns.size.buckets} currency={currency} label="Size" mode={mode} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">R-multiple distribution</h3>
+            <RHistogram bins={breakdowns.rBins} total={breakdowns.rTotal} />
+            <details className="mt-1 text-sm">
+              <summary className="cursor-pointer text-xs text-muted hover:text-ink">Show as table</summary>
+              <table className="table mt-2">
+                <thead>
+                  <tr>
+                    <th>Bin</th>
+                    <th className="text-right">Trades</th>
+                    <th className="text-right">Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdowns.rBins.map((b) => (
+                    <tr key={b.key}>
+                      <td>{b.label}</td>
+                      <td className="num text-right">{b.count}</td>
+                      <td className="num text-right text-ink-2">{breakdowns.rTotal ? formatPercent(b.count / breakdowns.rTotal, 0) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          </div>
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Instrument, side and account</h3>
+            <BucketTable rows={[...breakdowns.instrument, ...breakdowns.side, ...breakdowns.account.map((a) => ({ ...a, key: `acct-${a.key}` }))]} currency={currency} label="Group" mode={mode} />
+          </div>
+        </div>
+      </section>
+
+      <section className="card card-pad min-w-0" aria-label="State before the open">
+        <h2 className="mb-1 text-sm font-semibold">State before the open</h2>
+        <p className="mb-3 text-xs text-muted">
+          Results by what you logged at check-in. {breakdowns.daysWithState} day{breakdowns.daysWithState === 1 ? "" : "s"} with a reading so far.
+        </p>
+        {breakdowns.daysWithState === 0 ? (
+          <p className="text-sm text-muted">
+            Fill in the check-in on{" "}
+            <Link href="/today" className="text-accent underline">
+              Today
+            </Link>{" "}
+            for a few sessions and this fills up.
+          </p>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="min-w-0 overflow-x-auto">
+              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Sleep</h3>
+              <BucketTable rows={breakdowns.sleep} currency={currency} label="Sleep" mode={mode} />
+            </div>
+            <div className="min-w-0 overflow-x-auto">
+              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Mood</h3>
+              <BucketTable rows={breakdowns.mood} currency={currency} label="Mood" mode={mode} />
+            </div>
+            <div className="min-w-0 overflow-x-auto">
+              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Focus</h3>
+              <BucketTable rows={breakdowns.focus} currency={currency} label="Focus" mode={mode} />
+            </div>
+            <div className="min-w-0 overflow-x-auto">
+              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Energy</h3>
+              <BucketTable rows={breakdowns.energy} currency={currency} label="Energy" mode={mode} />
+            </div>
+          </div>
+        )}
+        <div className="mt-4 min-w-0 overflow-x-auto">
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Planned vs unplanned days</h3>
+          <BucketTable rows={breakdowns.planned} currency={currency} label="Days" mode={mode} empty="No closed trades yet." />
+        </div>
       </section>
 
       <section className="card card-pad min-w-0" aria-label="Tilt ledger">

@@ -16,7 +16,7 @@ export function EdgeDecayChart({ setup, timeZone }: { setup: SetupDecayDTO; time
         <ComposedChart data={data} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke={chartTheme.grid} strokeWidth={1} />
           <XAxis dataKey="index" tick={chartTheme.tick} axisLine={{ stroke: chartTheme.axis }} tickLine={false} minTickGap={24} />
-          <YAxis tickFormatter={(v: number) => `${v}R`} tick={chartTheme.tick} axisLine={false} tickLine={false} width={40} />
+          <YAxis tickFormatter={(v: number) => `${v.toFixed(1)}R`} tick={chartTheme.tick} axisLine={false} tickLine={false} width={44} />
           <ReferenceLine y={0} stroke={chartTheme.axis} strokeWidth={1} />
           <Tooltip
             cursor={{ stroke: chartTheme.axis, strokeWidth: 1 }}

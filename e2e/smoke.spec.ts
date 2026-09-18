@@ -222,6 +222,12 @@ test("Today: check-in drives the plan budget bar", async () => {
 
 test("a rule-breaking trade needs a justification and lands in the ledger", async () => {
   await page.goto("/rules");
+  // Remove stale rules left behind by interrupted runs so exactly one rule breaks.
+  const stale = page.locator("li", { hasText: /Stop required [A-Z0-9]+/ });
+  while ((await stale.count()) > 0) {
+    await stale.first().getByRole("button", { name: "Delete" }).click();
+    await page.waitForTimeout(500);
+  }
   await page.selectOption("#new-kind", "STOP_REQUIRED");
   await page.fill("#new-title", `Stop required ${stamp}`);
   await page.getByRole("button", { name: "Add rule" }).click();
@@ -251,9 +257,14 @@ test("a rule-breaking trade needs a justification and lands in the ledger", asyn
   await expect(events).toContainText(`Stop required ${stamp}`);
   await expect(events).toContainText("Scalping the open, mental stop at 49.5");
   await expect(page.locator("section[aria-label='Trades']")).toContainText("1 rule broken");
+  await expect(page.locator("section[aria-label='Process streak']")).toContainText("Latest session is missing");
 
   await page.goto("/reports");
   await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible();
+  await expect(page.locator("section[aria-label='Leak finder']")).toBeVisible();
+  await expect(page.locator("section[aria-label='Breakdowns']")).toContainText("Hour of day");
+  await expect(page.locator("section[aria-label='State before the open']")).toContainText("Planned vs unplanned");
+  await expect(page.locator("section[aria-label='Edge decay']")).toBeVisible();
   await expect(page.locator("section[aria-label='Tilt ledger']")).toContainText("Scalping the open, mental stop at 49.5");
   await shot("15-reports");
 

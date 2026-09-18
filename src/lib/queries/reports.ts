@@ -1,9 +1,192 @@
 import "server-only";
 import { adherenceSplit, overallAdherence, ruleCosts, weeklyAdherence, type AdherenceTrade, type GroupStats } from "@/lib/adherence";
+import {
+  byAccount,
+  byDayOfWeek,
+  byHoldDuration,
+  byHourOfDay,
+  byInstrument,
+  bySide,
+  bySizeBucket,
+  rDistribution,
+  type Bucket,
+  type BreakdownTrade,
+} from "@/lib/breakdowns";
+import { bucketByState, plannedVsUnplanned, type DayState } from "@/lib/day-stats";
 import { db } from "@/lib/db";
 import { toNumber, toPlainString } from "@/lib/decimal";
 import { edgeDecay } from "@/lib/edge-decay";
+import { findLeaks, type LeakTrade } from "@/lib/leaks";
 import { dateKeyInZone } from "@/lib/tz";
+
+export interface BucketDTO {
+  key: string;
+  label: string;
+  tradeCount: number;
+  wins: number;
+  netPnl: number;
+  expectancy: number | null;
+  winRate: number | null;
+  netR: number;
+  rCount: number;
+  expectancyR: number | null;
+}
+
+export interface FindingDTO {
+  key: string;
+  title: string;
+  description: string;
+  sampleSize: number;
+  impactPnl: number;
+  impactR: number | null;
+  groupExpectancy: number;
+  restExpectancy: number | null;
+  kind: "leak" | "opportunity";
+  /** Query string for /rules that pre-fills the suggested rule. */
+  addRuleHref: string | null;
+}
+
+export interface BreakdownsReport {
+  hour: BucketDTO[];
+  weekday: BucketDTO[];
+  hold: BucketDTO[];
+  size: { buckets: BucketDTO[]; basis: "risk" | "notional"; thresholds: [number, number] };
+  rBins: { key: string; label: string; count: number }[];
+  rTotal: number;
+  instrument: BucketDTO[];
+  side: BucketDTO[];
+  account: BucketDTO[];
+  mood: BucketDTO[];
+  focus: BucketDTO[];
+  energy: BucketDTO[];
+  sleep: BucketDTO[];
+  planned: BucketDTO[];
+  closedCount: number;
+  daysWithState: number;
+}
+
+function bucketDto(b: Bucket): BucketDTO {
+  return {
+    key: b.key,
+    label: b.label,
+    tradeCount: b.tradeCount,
+    wins: b.wins,
+    netPnl: b.netPnl.toNumber(),
+    expectancy: toNumber(b.expectancy),
+    winRate: toNumber(b.winRate),
+    netR: b.netR.toNumber(),
+    rCount: b.rCount,
+    expectancyR: toNumber(b.expectancyR),
+  };
+}
+
+async function loadBreakdownTrades(userId: string): Promise<LeakTrade[]> {
+  const trades = await db.trade.findMany({
+    where: { userId, status: "CLOSED" },
+    select: {
+      id: true,
+      symbol: true,
+      assetClass: true,
+      side: true,
+      status: true,
+      pnl: true,
+      rMultiple: true,
+      plannedRisk: true,
+      quantity: true,
+      entryPrice: true,
+      multiplier: true,
+      entryAt: true,
+      exitAt: true,
+      account: { select: { name: true } },
+      tags: { select: { id: true, kind: true } },
+    },
+  });
+  return trades.map((t) => ({
+    id: t.id,
+    symbol: t.symbol,
+    assetClass: t.assetClass,
+    side: t.side,
+    accountName: t.account.name,
+    status: t.status,
+    pnl: toPlainString(t.pnl),
+    rMultiple: toPlainString(t.rMultiple),
+    plannedRisk: toPlainString(t.plannedRisk),
+    quantity: toPlainString(t.quantity) ?? "0",
+    entryPrice: toPlainString(t.entryPrice) ?? "0",
+    multiplier: toPlainString(t.multiplier) ?? "1",
+    entryAt: t.entryAt,
+    exitAt: t.exitAt,
+    setupIds: t.tags.filter((tag) => tag.kind === "SETUP").map((tag) => tag.id),
+  }));
+}
+
+export async function loadBreakdowns(userId: string, timeZone: string): Promise<BreakdownsReport> {
+  const [trades, days] = await Promise.all([
+    loadBreakdownTrades(userId),
+    db.day.findMany({ where: { userId }, select: { date: true, mood: true, sleepHours: true, focus: true, energy: true, checkedInAt: true, maxTrades: true, maxLossR: true } }),
+  ]);
+  const states: DayState[] = days.map((d) => ({
+    date: d.date,
+    mood: d.mood,
+    sleepHours: toNumber(d.sleepHours),
+    focus: d.focus,
+    energy: d.energy,
+    checkedIn: !!d.checkedInAt,
+    hasPlan: d.maxTrades !== null || d.maxLossR !== null,
+  }));
+  const size = bySizeBucket(trades);
+  const dist = rDistribution(trades);
+  const base = trades as BreakdownTrade[];
+  return {
+    hour: byHourOfDay(base, timeZone).map(bucketDto),
+    weekday: byDayOfWeek(base, timeZone).map(bucketDto),
+    hold: byHoldDuration(base).map(bucketDto),
+    size: { buckets: size.buckets.map(bucketDto), basis: size.basis, thresholds: size.thresholds },
+    rBins: dist.bins.map((b) => ({ key: b.key, label: b.label, count: b.count })),
+    rTotal: dist.total,
+    instrument: byInstrument(base).map(bucketDto),
+    side: bySide(base).map(bucketDto),
+    account: byAccount(base).map(bucketDto),
+    mood: bucketByState(base, states, timeZone, "mood").map(bucketDto),
+    focus: bucketByState(base, states, timeZone, "focus").map(bucketDto),
+    energy: bucketByState(base, states, timeZone, "energy").map(bucketDto),
+    sleep: bucketByState(base, states, timeZone, "sleep").map(bucketDto),
+    planned: plannedVsUnplanned(base, states, timeZone).map(bucketDto),
+    closedCount: trades.length,
+    daysWithState: states.filter((d) => d.mood !== null || d.sleepHours !== null || d.focus !== null || d.energy !== null).length,
+  };
+}
+
+export async function loadLeaks(userId: string, timeZone: string): Promise<FindingDTO[]> {
+  const [trades, plans, setups] = await Promise.all([
+    loadBreakdownTrades(userId),
+    db.day.findMany({ where: { userId }, select: { date: true, maxTrades: true } }),
+    db.tag.findMany({ where: { userId, kind: "SETUP" }, select: { id: true, name: true } }),
+  ]);
+  return findLeaks(trades, { timeZone, plans, setups }).map((f) => {
+    let addRuleHref: string | null = null;
+    if (f.suggestedRule) {
+      const params = new URLSearchParams({ kind: f.suggestedRule.kind, title: f.suggestedRule.title });
+      if (f.suggestedRule.value) params.set("value", f.suggestedRule.value);
+      if (f.suggestedRule.timeValue) params.set("timeValue", f.suggestedRule.timeValue);
+      addRuleHref = `/rules?${params.toString()}`;
+    }
+    // Only show the R impact when it agrees in sign with the money impact; mixed stops can make them disagree.
+    const impactR = f.impactR && f.impactR.isNegative() === f.impactPnl.isNegative() ? f.impactR.toNumber() : null;
+    return {
+      key: f.key,
+      title: f.title,
+      description: f.description,
+      sampleSize: f.sampleSize,
+      impactPnl: f.impactPnl.toNumber(),
+      impactR,
+      groupExpectancy: f.groupExpectancy.toNumber(),
+      restExpectancy: toNumber(f.restExpectancy),
+      kind: f.kind,
+      addRuleHref,
+    };
+  });
+}
 
 export interface DecayPointDTO {
   index: number;
