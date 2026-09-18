@@ -11,6 +11,18 @@ function subscribe(callback: () => void) {
   };
 }
 
+/**
+ * Tells the service worker the session is over so nothing it kept during it
+ * survives on a shared device. Safe to call without a service worker.
+ */
+export function forgetServiceWorkerSession(): void {
+  try {
+    navigator.serviceWorker?.controller?.postMessage({ type: "logout" });
+  } catch {
+    // No service worker or messaging: nothing was kept.
+  }
+}
+
 /** Registers the service worker and shows a clear banner while the device is offline. */
 export function Pwa() {
   const online = useSyncExternalStore(subscribe, () => navigator.onLine, () => true);

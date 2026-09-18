@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { IMPORT_FIELDS } from "@/lib/csv";
 import { db } from "@/lib/db";
+import { requireSameOrigin } from "@/lib/origin-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,8 @@ export async function GET() {
 
 /** Saves (or replaces) a column mapping under a broker name. */
 export async function POST(request: Request) {
+  const refused = requireSameOrigin(request);
+  if (refused) return refused;
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const parsed = presetSchema.safeParse(await request.json().catch(() => null));

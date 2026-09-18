@@ -6,10 +6,26 @@ import { timingSafeEqual } from "node:crypto";
 
 export const LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
 export const LOCKOUT_MAX_FAILURES = 5;
+/** A production setup token shorter than this is treated as missing. */
+export const SETUP_TOKEN_MIN_LENGTH = 16;
 
 /** True when a setup token is configured (non-empty after trimming). */
 export function setupTokenRequired(configured: string | undefined): boolean {
   return typeof configured === "string" && configured.trim() !== "";
+}
+
+/**
+ * How /setup is guarded: "open" needs no token (development without one),
+ * "token" only answers the setup link, and "unconfigured" means production
+ * has no usable token, so the page is unavailable (503) and the action refuses.
+ */
+export type SetupGate = "open" | "token" | "unconfigured";
+
+export function setupGate(configured: string | undefined, nodeEnv: string | undefined = process.env.NODE_ENV): SetupGate {
+  const value = typeof configured === "string" ? configured.trim() : "";
+  if (value.length >= SETUP_TOKEN_MIN_LENGTH) return "token";
+  if (nodeEnv === "production") return "unconfigured";
+  return value ? "token" : "open";
 }
 
 /**
@@ -42,6 +58,31 @@ export function lockoutEndsAt(failureTimes: Date[], now: Date = new Date(), wind
   if (counted.length < maxFailures) return null;
   const decisive = counted[counted.length - maxFailures];
   return new Date(decisive.getTime() + windowMs);
+}
+
+/** A failed sign-in as stored for the lockout window. */
+export interface FailedAttempt {
+  identifier: string;
+  ip: string;
+  createdAt: Date;
+}
+
+/**
+ * Whether a sign-in for `identifier` from `ip` is locked: too many failures
+ * for that identifier from that address, or too many from the address for any
+ * identifier. Failures for the identifier from other addresses do not count,
+ * so nobody can lock a username for everyone with a few wrong passwords.
+ */
+export function loginLockedOut(
+  attempts: FailedAttempt[],
+  identifier: string,
+  ip: string,
+  now: Date = new Date(),
+  options: { windowMs?: number; maxFailures?: number } = {},
+): boolean {
+  const fromIp = attempts.filter((a) => a.ip === ip);
+  const pair = fromIp.filter((a) => a.identifier === identifier).map((a) => a.createdAt);
+  return isLockedOut(pair, now, options) || isLockedOut(fromIp.map((a) => a.createdAt), now, options);
 }
 
 /**

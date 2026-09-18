@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { clientIpFrom, failuresInWindow, isLockedOut, lockoutEndsAt, setupTokenMatches, setupTokenRequired } from "@/lib/security";
+import {
+  clientIpFrom,
+  failuresInWindow,
+  isLockedOut,
+  lockoutEndsAt,
+  loginLockedOut,
+  setupGate,
+  setupTokenMatches,
+  setupTokenRequired,
+  type FailedAttempt,
+} from "@/lib/security";
 
 describe("setup token", () => {
   it("is only required when configured and non-empty", () => {
@@ -19,6 +29,30 @@ describe("setup token", () => {
     expect(setupTokenMatches(undefined, "s3cret-token")).toBe(false);
     expect(setupTokenMatches("anything", undefined)).toBe(false); // nothing configured never matches
     expect(setupTokenMatches("", "")).toBe(false);
+  });
+});
+
+describe("setup gate", () => {
+  const long = "x".repeat(16);
+
+  it("asks for the token whenever a usable one is configured", () => {
+    expect(setupGate(long, "production")).toBe("token");
+    expect(setupGate(long, "development")).toBe("token");
+    expect(setupGate(` ${long} `, "production")).toBe("token"); // trimmed like the comparison
+  });
+
+  it("makes production unavailable without a token of at least 16 characters", () => {
+    expect(setupGate(undefined, "production")).toBe("unconfigured");
+    expect(setupGate("", "production")).toBe("unconfigured");
+    expect(setupGate("   ", "production")).toBe("unconfigured");
+    expect(setupGate("x".repeat(15), "production")).toBe("unconfigured");
+  });
+
+  it("keeps development open without a token and guarded by any token", () => {
+    expect(setupGate(undefined, "development")).toBe("open");
+    expect(setupGate("", "test")).toBe("open");
+    expect(setupGate("short", "development")).toBe("token");
+    expect(setupGate("short", undefined)).toBe("token");
   });
 });
 
@@ -47,6 +81,28 @@ describe("login lockout", () => {
   it("supports custom thresholds", () => {
     expect(isLockedOut([minutesAgo(1), minutesAgo(2)], now, { maxFailures: 2 })).toBe(true);
     expect(isLockedOut([minutesAgo(1), minutesAgo(2)], now, { windowMs: 60 * 1000, maxFailures: 2 })).toBe(false);
+  });
+
+  const attempt = (identifier: string, ip: string, m: number): FailedAttempt => ({ identifier, ip, createdAt: minutesAgo(m) });
+
+  it("locks a name only for the address that kept failing it", () => {
+    const attempts = [1, 2, 3, 4, 5].map((m) => attempt("alice", "203.0.113.9", m));
+    expect(loginLockedOut(attempts, "alice", "203.0.113.9", now)).toBe(true);
+    // The real owner, elsewhere, is unaffected: nobody can lock a username for everyone.
+    expect(loginLockedOut(attempts, "alice", "198.51.100.7", now)).toBe(false);
+  });
+
+  it("locks an address that keeps failing across names", () => {
+    const attempts = ["a", "b", "c", "d", "e"].map((name, i) => attempt(name, "203.0.113.9", i + 1));
+    expect(loginLockedOut(attempts, "alice", "203.0.113.9", now)).toBe(true);
+    expect(loginLockedOut(attempts, "alice", "198.51.100.7", now)).toBe(false);
+    expect(loginLockedOut(attempts.slice(0, 4), "alice", "203.0.113.9", now)).toBe(false);
+  });
+
+  it("only counts failures inside the window", () => {
+    const attempts = [16, 17, 18, 19, 20].map((m) => attempt("alice", "203.0.113.9", m));
+    expect(loginLockedOut(attempts, "alice", "203.0.113.9", now)).toBe(false);
+    expect(loginLockedOut([], "alice", "203.0.113.9", now)).toBe(false);
   });
 });
 

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { setupTokenMatches, setupTokenRequired } from "@/lib/security";
-import { PASSWORD_CHANGE_PATH, SESSION_COOKIE, verifySessionToken, type SessionClaims } from "@/lib/session-token";
+import { setupGate, setupTokenMatches } from "@/lib/security";
+import { PASSWORD_CHANGE_PATH, SESSION_COOKIE, sessionCookieAttributes, verifySessionToken, type SessionClaims } from "@/lib/session-token";
 
 const PUBLIC_PATHS = ["/login", "/setup", "/api/health", "/offline", "/share", "/api/share"];
 
@@ -9,15 +9,38 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-const SETUP_DENIED_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Setup link required · Darkpools</title><style>html{color-scheme:dark}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0d12;color:#eef1f5;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:26rem;padding:2rem;text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#aeb6c3;font-size:.95rem;line-height:1.5;margin:0}</style></head><body><main><h1>Setup link required</h1><p>This journal is waiting for its admin. Open the setup link printed by the server setup to create the admin account.</p></main></body></html>`;
+const SETUP_PAGE_STYLE = `html{color-scheme:dark}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0d12;color:#eef1f5;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:26rem;padding:2rem;text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#aeb6c3;font-size:.95rem;line-height:1.5;margin:0}code{color:#eef1f5}`;
 
-/** First-run gate: with SETUP_TOKEN configured, /setup only renders for a request carrying the token. */
+function setupPage(title: string, body: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title} · Darkpools</title><style>${SETUP_PAGE_STYLE}</style></head><body><main><h1>${title}</h1><p>${body}</p></main></body></html>`;
+}
+
+const SETUP_DENIED_HTML = setupPage(
+  "Setup link required",
+  "This journal is waiting for its admin. Open the setup link printed by the server setup to create the admin account.",
+);
+const SETUP_UNCONFIGURED_HTML = setupPage(
+  "Setup unavailable",
+  "This server is missing its setup token. Set <code>SETUP_TOKEN</code> to at least 16 characters, restart the server and open the setup link it prints.",
+);
+
+function html(body: string, status: number): NextResponse {
+  return new NextResponse(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
+/**
+ * First-run gate. Once any account exists /setup only redirects to sign-in.
+ * Before that, production without a usable SETUP_TOKEN answers 503, and a
+ * configured token only renders the page for a request carrying it.
+ */
 async function gateSetup(request: NextRequest): Promise<NextResponse | null> {
-  if (request.method !== "GET" || !setupTokenRequired(process.env.SETUP_TOKEN)) return null;
+  const gate = setupGate(process.env.SETUP_TOKEN);
+  if (request.method !== "GET" || gate === "open") return null;
   const users = await db.user.count();
   if (users > 0) return NextResponse.redirect(new URL("/login", request.url));
+  if (gate === "unconfigured") return html(SETUP_UNCONFIGURED_HTML, 503);
   if (setupTokenMatches(request.nextUrl.searchParams.get("token"), process.env.SETUP_TOKEN)) return null;
-  return new NextResponse(SETUP_DENIED_HTML, { status: 403, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+  return html(SETUP_DENIED_HTML, 403);
 }
 
 /** Whether the account behind a well-formed token still accepts it (active, not reset since). */
@@ -41,7 +64,7 @@ export async function proxy(request: NextRequest) {
       if (await sessionStillValid(session)) return NextResponse.redirect(new URL("/", request.url));
       // A cookie for a deactivated, reset or deleted account is dropped here so sign-in can proceed.
       const response = (pathname === "/setup" ? await gateSetup(request) : null) ?? NextResponse.next();
-      response.cookies.set(SESSION_COOKIE, "", { maxAge: 0, path: "/" });
+      response.cookies.set(SESSION_COOKIE, "", { ...sessionCookieAttributes(), maxAge: 0 });
       return response;
     }
     if (pathname === "/setup") {
@@ -71,5 +94,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon.svg|icons/|manifest.webmanifest|sw.js|robots.txt).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon.svg|icons/|manifest.webmanifest|sw.js|sw-policy.js|robots.txt).*)"],
 };

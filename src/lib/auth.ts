@@ -48,6 +48,9 @@ const loadSessionUser = cache(async (): Promise<CurrentUser | null> => {
   return rest;
 });
 
+/** The account behind the session whatever its state, temporary password included; for signing out. */
+export const getSessionUser = loadSessionUser;
+
 /**
  * The signed-in user for route handlers, or null. An account that still has
  * to replace its temporary password counts as signed out here, so no data

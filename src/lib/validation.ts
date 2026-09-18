@@ -3,7 +3,7 @@ import { Decimal } from "@/lib/decimal";
 import { ASSET_CLASSES, IMPORT_FIELDS } from "@/lib/csv";
 import { RULE_KIND_INFO, RULE_KINDS } from "@/lib/rules";
 import { isValidTimeZone } from "@/lib/tz";
-import { USERNAME_HINT, USERNAME_RE, normalizeUsername } from "@/lib/users";
+import { PASSWORD_MAX_BYTES, PASSWORD_MIN_LENGTH, PASSWORD_TOO_LONG, USERNAME_HINT, USERNAME_RE, normalizeUsername, passwordByteLength } from "@/lib/users";
 
 export const SIDES = ["LONG", "SHORT"] as const;
 export const TRADE_STATUSES = ["OPEN", "CLOSED"] as const;
@@ -38,7 +38,10 @@ export const emailSchema = z.preprocess(
   (v) => (typeof v === "string" ? v.trim().toLowerCase() : v),
   z.email("Enter a valid email address").max(200),
 );
-export const passwordSchema = z.string().min(10, "Use at least 10 characters").max(200, "Too long");
+export const passwordSchema = z
+  .string()
+  .min(PASSWORD_MIN_LENGTH, `Use at least ${PASSWORD_MIN_LENGTH} characters`)
+  .refine((v) => passwordByteLength(v) <= PASSWORD_MAX_BYTES, PASSWORD_TOO_LONG);
 export const timeZoneSchema = z.string().trim().min(1).max(64).refine(isValidTimeZone, "Unknown time zone");
 
 export const usernameSchema = z.preprocess(

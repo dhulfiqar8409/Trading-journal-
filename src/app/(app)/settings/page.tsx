@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { logoutAction } from "@/actions/auth";
 import { revokeShareLinkAction } from "@/actions/share";
+import { LogoutButton } from "@/components/nav";
 import { PasswordForm, ProfileForm } from "@/components/settings-forms";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -118,12 +119,8 @@ export default async function SettingsPage() {
         ) : null}
         <section className="card card-pad">
           <h2 className="mb-1 text-sm font-semibold">Session</h2>
-          <p className="mb-3 text-sm text-muted">Sessions last 30 days on this device.</p>
-          <form action={logoutAction}>
-            <button type="submit" className="btn">
-              Log out
-            </button>
-          </form>
+          <p className="mb-3 text-sm text-muted">Sessions last 30 days. Logging out signs this account out on every device.</p>
+          <LogoutButton action={logoutAction} className="btn" />
         </section>
       </div>
     </div>

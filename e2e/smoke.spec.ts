@@ -6,14 +6,17 @@ import { isoWeekKeyOfDateKey } from "../src/lib/weeks";
 /**
  * Drives the real app end to end: first-run setup (or login when the owner
  * already exists), creating a trade, the trade list and detail pages, the
- * dashboard, CSV import with de-duplication, a phone-width layout check and
- * the sign-out lock-out.
+ * dashboard, CSV import with de-duplication, foreign-origin requests being
+ * refused, a phone-width layout check and the sign-out lock-out.
  */
 test.describe.configure({ mode: "serial" });
 
 const username = process.env.E2E_USERNAME ?? "owner";
 const email = process.env.E2E_EMAIL ?? "owner@example.com";
 const password = process.env.E2E_PASSWORD ?? "correct-horse-battery-staple";
+/** The server's SETUP_TOKEN, which a production build requires for the first-run page. */
+const setupToken = process.env.E2E_SETUP_TOKEN;
+const FOREIGN_ORIGIN = "https://kcal.deeapps.net";
 const shotsDir = process.env.E2E_SHOTS_DIR ?? path.join("test-results", "screenshots");
 const stamp = Date.now().toString(36).toUpperCase();
 const manualSymbol = `E2E${stamp}`;
@@ -54,8 +57,15 @@ async function signIn(identifier: string, secret: string) {
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
+/** The session cookie as a request header; in production it is Secure, which the request API would otherwise drop on plain http. */
+async function sessionCookieHeader(): Promise<string> {
+  const cookie = (await page.context().cookies()).find((c) => c.name.endsWith("darkpools_session"));
+  expect(cookie, "session cookie present").toBeTruthy();
+  return `${cookie!.name}=${cookie!.value}`;
+}
+
 test("first run: create the admin account, or sign in when it exists", async () => {
-  await page.goto("/setup");
+  await page.goto(setupToken ? `/setup?token=${encodeURIComponent(setupToken)}` : "/setup");
   await page.waitForURL(/\/(setup|login)(\?.*)?$/);
   if (page.url().includes("/setup")) {
     await shot("01-setup");
@@ -294,11 +304,19 @@ test("installable app assets and two-tap capture", async () => {
   expect(json.share_target?.action).toBe("/share-target");
   expect(json.shortcuts).toHaveLength(3);
   expect((await page.request.get("/sw.js")).status()).toBe(200);
+  expect((await page.request.get("/sw-policy.js")).status()).toBe(200); // imported by the worker, so it must be public too
   expect((await page.request.get("/icons/maskable-512.png")).status()).toBe(200);
   expect((await page.request.get("/offline")).status()).toBe(200); // reachable without a session
   const shareAnon = await page.request.post("/share-target", { multipart: { text: "hello" }, maxRedirects: 0 });
   expect([303, 307]).toContain(shareAnon.status()); // the proxy bounces it before the route does
   expect(shareAnon.headers()["location"]).toContain("/login");
+  // The share target accepts a post without an Origin (the installed app's share sheet) but never a foreign one.
+  const cookie = await sessionCookieHeader();
+  const shareForeign = await page.request.post("/share-target", { multipart: { text: "hello" }, headers: { cookie, origin: FOREIGN_ORIGIN }, maxRedirects: 0 });
+  expect(shareForeign.status()).toBe(403);
+  const shareOwn = await page.request.post("/share-target", { multipart: { text: `shared ${stamp}` }, headers: { cookie }, maxRedirects: 0 });
+  expect(shareOwn.status()).toBe(303);
+  expect(shareOwn.headers()["location"]).toContain(`/trades/new?note=shared+${stamp}`);
 
   // The form is prefilled from the last trade, the stop is up front and details are folded away.
   await page.goto("/trades/new");
@@ -368,6 +386,30 @@ test("weekly review, share links, import presets and exports", async ({ browser 
   expect(exported.hasTrades).toBe(true);
   expect(exported.daysStatus).toBe(200);
   expect(exported.daysType).toContain("text/csv");
+});
+
+test("state-changing API routes refuse foreign and missing origins", async () => {
+  const cookie = await sessionCookieHeader();
+  const own = new URL(page.url()).origin;
+  const preset = { name: `Origin ${stamp}`, mapping: { symbol: "Symbol" }, options: {} };
+
+  // A signed-in request from a sibling subdomain, or one with no Origin at all, is refused before anything else.
+  const foreign = await page.request.post("/api/import/presets", { data: preset, headers: { cookie, origin: FOREIGN_ORIGIN } });
+  expect(foreign.status()).toBe(403);
+  expect(((await foreign.json()) as { error: string }).error).toContain("Cross-origin");
+  const missing = await page.request.post("/api/import/presets", { data: preset, headers: { cookie } });
+  expect(missing.status()).toBe(403);
+  expect((await page.request.post("/api/import", { data: {}, headers: { cookie, origin: FOREIGN_ORIGIN } })).status()).toBe(403);
+  expect((await page.request.post("/api/trades/none/attachments", { multipart: { file: { name: "x.png", mimeType: "image/png", buffer: Buffer.from("x") } }, headers: { cookie, origin: FOREIGN_ORIGIN } })).status()).toBe(403);
+  // The Referer stands in for a missing Origin, and only the app's own origin passes.
+  expect((await page.request.post("/api/import/presets", { data: preset, headers: { cookie, referer: `${FOREIGN_ORIGIN}/import` } })).status()).toBe(403);
+  const created = await page.request.post("/api/import/presets", { data: preset, headers: { cookie, origin: own } });
+  expect(created.status()).toBe(201);
+  const { id } = (await created.json()) as { id: string };
+  expect((await page.request.delete(`/api/import/presets/${id}`, { headers: { cookie, origin: FOREIGN_ORIGIN } })).status()).toBe(403);
+  expect((await page.request.delete(`/api/import/presets/${id}`, { headers: { cookie, referer: `${own}/import` } })).status()).toBe(204);
+  // Without a session the same-origin request is merely unauthorised: the origin check comes first, the session second.
+  expect((await page.request.post("/api/import/presets", { data: preset, headers: { origin: own } })).status()).toBe(401);
 });
 
 test("admin creates a user who must replace the temporary password and then sees only an empty journal", async ({ browser }) => {
@@ -482,8 +524,14 @@ test("delete this run's trades through the UI", async () => {
   }
 });
 
-test("logging out blocks protected pages and APIs", async () => {
+test("logging out blocks protected pages and APIs, and kills a copied cookie", async ({ browser }) => {
   await page.goto("/settings");
+  // A copy of the cookie taken before logging out, as a shared device or a thief would have it.
+  const copied = (await page.context().cookies()).find((c) => c.name.endsWith("darkpools_session"))!;
+  expect(copied).toBeTruthy();
+  const copiedHeader = `${copied.name}=${copied.value}`;
+  expect((await page.request.get("/api/export/trades", { headers: { cookie: copiedHeader } })).status()).toBe(200);
+
   await page.getByRole("button", { name: "Log out" }).first().click();
   await page.waitForURL(/\/login/);
   await page.goto("/trades");
@@ -494,5 +542,15 @@ test("logging out blocks protected pages and APIs", async () => {
   expect(api.status()).toBe(401);
   const health = await page.request.get("/api/health");
   expect(health.status()).toBe(200);
+
+  // The copied cookie is dead as well: logging out moved the account's session version on.
+  expect((await page.request.get("/api/export/trades", { headers: { cookie: copiedHeader } })).status()).toBe(401);
+  const thief = await browser.newContext();
+  await thief.addCookies([{ name: copied.name, value: copied.value, domain: copied.domain, path: copied.path, httpOnly: copied.httpOnly, secure: copied.secure, sameSite: copied.sameSite }]);
+  const stolen = await thief.newPage();
+  await stolen.goto("/trades");
+  await stolen.waitForURL(/\/login/);
+  await expect(stolen.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await thief.close();
   await shot("12-login-after-logout");
 });

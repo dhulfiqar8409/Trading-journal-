@@ -125,12 +125,16 @@ Guiding rules:
 ### Installable app
 
 - Web app manifest (name, dark theme colour, maskable icons, `start_url` on Today), a service
-  worker that caches the shell and the last copy of visited pages, an `/offline` page and an
-  offline banner while the device has no connection.
+  worker that caches the shell (the offline page, icons and hashed build assets) and never a page,
+  since pages belong to whoever is signed in: it honours `Cache-Control: no-store` and `private`,
+  forgets its runtime cache when the user logs out and drops every old cache when its version
+  changes. An `/offline` page and an offline banner cover the time without a connection.
 - Shortcuts: New trade, Check-in, Dashboard.
 - Web Share Target: sharing a screenshot from the phone's share sheet posts it to `/share-target`,
   which stores it as a pending upload and opens `/trades/new` with the image attached as a draft;
-  saving the trade turns the draft into an attachment. Drafts older than two days are removed.
+  saving the trade turns the draft into an attachment. Drafts older than a day are removed on the
+  next share or upload. Each account may store 200 MB of screenshots (`ATTACHMENT_QUOTA_MB`),
+  drafts included; a share or upload beyond that is refused with a message.
 - Notes, the focus note and the review questions offer dictation through the Web Speech API when
   the browser supports it; the button is absent otherwise.
 
@@ -167,8 +171,12 @@ Guiding rules:
 ## Accounts and administration
 
 - The first visit to `/setup` creates the `ADMIN` account (username, optional email, display name,
-  password). With `SETUP_TOKEN` configured the page only answers to the printed setup link, and it
-  stops working as soon as any account exists. There is no self-enrollment anywhere.
+  password of 10 characters to 72 bytes). With `SETUP_TOKEN` configured the page only answers to
+  the printed setup link, a production server without a token of at least 16 characters answers
+  503 instead of the form, and the page stops working as soon as any account exists. Creating the
+  first account and removing, demoting or deactivating an admin run under a database lock, so two
+  concurrent requests cannot both pass the "no account yet" or "another admin remains" check.
+  There is no self-enrollment anywhere.
 - `/admin/users`, linked from Settings and the navigation for admins only, lists accounts with
   role, status and last sign-in. The admin creates a user (username, display name, optional email,
   role, and a typed or generated temporary password shown exactly once), resets a password the
@@ -177,9 +185,10 @@ Guiding rules:
   screenshot files on disk.
 - Admins cannot deactivate, demote or delete themselves, and the last active admin cannot be
   removed. Every admin action checks the role on the server.
-- Sessions carry the account's session version. A password change or reset, a deactivation or a
-  deletion invalidates existing sessions at their next request; an account with a temporary
-  password is sent to `/change-password` before anything else.
+- Sessions carry the account's session version. A password change or reset, a deactivation, a
+  deletion or logging out invalidates existing sessions at their next request; an account with a
+  temporary password is sent to `/change-password` before anything else. In production the cookie
+  carries the `__Host-` prefix, and state-changing API routes refuse foreign origins.
 - Data isolation is unchanged: every query is scoped by user id, and the admin manages accounts,
   not other users' data. Sign-in is by username (the account's email works too), with the lockout
   described in the README.

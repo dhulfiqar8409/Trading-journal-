@@ -46,7 +46,7 @@ export async function GET(_request: Request, context: { params: Promise<{ entity
     const accounts = await db.account.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
     rows = accounts.map((a) => ({ id: a.id, name: a.name, broker: a.broker ?? "", currency: a.currency, isDefault: a.isDefault }));
   }
-  const csv = Papa.unparse(rows, { newline: "\r\n" });
+  const csv = Papa.unparse(rows, { newline: "\r\n", escapeFormulae: true });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   return new Response(`﻿${csv}`, {
     headers: {

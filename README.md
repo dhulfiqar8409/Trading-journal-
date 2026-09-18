@@ -102,7 +102,9 @@ All variables are documented in [`.env.example`](.env.example).
 | `DATABASE_URL` | yes | PostgreSQL connection string used by Prisma. In docker compose the app service always connects to the bundled `db` service, so this value only matters outside Docker. |
 | `SESSION_SECRET` | yes | Secret that signs session cookies. At least 32 characters; `openssl rand -base64 48` makes a good one. |
 | `UPLOAD_DIR` | no | Directory for trade screenshots. Defaults to `./uploads`; the Docker image uses `/app/uploads`. |
-| `SETUP_TOKEN` | no | When set, the first-run page `/setup` (which creates the admin account) answers 403 unless the request carries `?token=<value>` (the value is compared in constant time and passed through the form). Once any account exists, `/setup` redirects to sign-in regardless. Unset keeps `/setup` open until the admin account is created. |
+| `SETUP_TOKEN` | production | The first-run page `/setup` (which creates the admin account) answers 403 unless the request carries `?token=<value>` (the value is compared in constant time and passed through the form). In production the token is required and must be at least 16 characters: without one `/setup` answers 503 with a message naming the missing token, the setup action refuses, and the server logs one line at start-up. In development an unset token keeps `/setup` open. Once any account exists, `/setup` redirects to sign-in regardless. |
+| `APP_ORIGIN` | production | The origin (scheme and host) browsers must present on state-changing requests to the API routes and the share target; `https://darkpools.deeapps.net` in production. Unset, the app derives it from the request's `Host` and `X-Forwarded-Proto` headers. |
+| `ATTACHMENT_QUOTA_MB` | no | Screenshot storage allowed per account in megabytes, attached and pending shares together. Defaults to 200; an upload or share beyond it is refused with a message. |
 | `POSTGRES_PASSWORD` | compose | Password of the `darkpools` database role created by the `db` service and used to build the app's `DATABASE_URL`. |
 | `APP_PORT` | compose | Host port (bound to 127.0.0.1) that docker compose publishes the app on. Defaults to 3300. |
 | `SEED_USERNAME`, `SEED_EMAIL`, `SEED_PASSWORD` | seed only | Credentials of the demo admin created by `npm run seed` (the username defaults to the email's local part). |
@@ -116,14 +118,27 @@ demote or delete their own account, and the last active admin cannot be removed.
 account removes its trades, days, rules, tags, share links, import presets, attachments and the
 screenshot files on disk.
 
-Sessions are JWTs signed with `SESSION_SECRET`, stored in an HttpOnly, SameSite=Lax cookie
-(Secure in production) that expires after 30 days. The token carries the account's session
-version, so a password change or reset, a deactivation or a deletion rejects every existing
-session at its next request; an account created or reset with a temporary password is sent to
-`/change-password` before anything else. Sign-in is rate limited: five failed attempts within
-fifteen minutes for a username (or email) or for a client address (taken from `X-Real-IP`, then
-the first `X-Forwarded-For` entry, as set by the reverse proxy) block further attempts for the
-rest of the window with the same generic message; a successful sign-in clears the counter.
+Sessions are JWTs signed with `SESSION_SECRET`, stored in an HttpOnly, SameSite=Lax cookie that
+expires after 30 days; in production the cookie is Secure and named with the `__Host-` prefix, so
+it is only ever sent over HTTPS to this host and cannot be planted by a sibling subdomain. The
+token carries the account's session version, so a password change or reset, a deactivation, a
+deletion or logging out rejects every existing session at its next request (logging out signs the
+account out on every device, and a copied cookie dies with it); an account created or reset with
+a temporary password is sent to `/change-password` before anything else. Passwords are 10
+characters to 72 bytes (the hash reads no further). Sign-in is rate limited per client address
+(taken from `X-Real-IP`, then the first `X-Forwarded-For` entry, as set by the reverse proxy):
+five failed attempts within fifteen minutes for a username (or email) from that address, or five
+from the address for any name, block further attempts from it for the rest of the window with the
+same generic message; failures from other addresses never lock the account's owner out, and a
+successful sign-in clears that name's failures from that address.
+
+State-changing API routes (CSV import, screenshot uploads, import presets) and the share target
+refuse requests whose `Origin` header (or, failing that, the `Referer`) is not the app's own
+origin, because the other applications on sibling subdomains are same-site for cookie purposes.
+Server actions get the same check from the framework. Screenshots are served with
+`Cache-Control: private, no-store`, CSV exports escape formula-like cells, and each account may
+store `ATTACHMENT_QUOTA_MB` of screenshots; shared screenshots that were never attached are
+removed after a day.
 
 ## Tests
 
@@ -139,17 +154,31 @@ The end-to-end smoke test drives the real application: first-run setup (or sign-
 exists), creating a trade, the trade list and detail pages, the dashboard and its charts, a CSV
 import with a duplicate row, the Today check-in and budget bar, a rule-breaking trade with its
 justification and ledger entry, the PWA assets and two-tap capture, the weekly review with a share
-link, import presets and exports, the admin creating a user who signs in with the temporary
-password, is made to replace it and then sees an empty journal and no admin pages, 390px-wide
-layout checks on every page and the sign-out lock-out. Start the app against a database first, then:
+link, import presets and exports, foreign-origin requests to the API routes and the share target
+being refused, the admin creating a user who signs in with the temporary password, is made to
+replace it and then sees an empty journal and no admin pages, 390px-wide layout checks on every
+page and the sign-out lock-out (a copy of the cookie taken before logging out is dead too). Start
+the app against a database first, then:
 
 ```bash
 E2E_BASE_URL=http://127.0.0.1:3000 npm run e2e
 ```
 
 `E2E_USERNAME` / `E2E_EMAIL` / `E2E_PASSWORD` set the admin credentials (defaults exist),
-`E2E_SHOTS_DIR` changes where screenshots are written and `PW_CHROMIUM_PATH` points Playwright at
-a preinstalled Chromium.
+`E2E_SETUP_TOKEN` passes the server's `SETUP_TOKEN` to the first-run step (a production build
+needs one), `E2E_SHOTS_DIR` changes where screenshots are written and `PW_CHROMIUM_PATH` points
+Playwright at a preinstalled Chromium. To run it against a production build:
+
+```bash
+npm run build
+SETUP_TOKEN=local-setup-token-0123456789 npm start          # plus DATABASE_URL and SESSION_SECRET from .env
+E2E_SETUP_TOKEN=local-setup-token-0123456789 npm run e2e
+```
+
+The production setup guard has a spec of its own, skipped unless asked for: start a production
+build without `SETUP_TOKEN` against an empty database and run
+`E2E_SETUP_GUARD=1 npx playwright test e2e/setup-guard.spec.ts`, which checks that `/setup`
+answers 503 and names the missing token.
 The CI workflow (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests, `prisma validate`,
 the production build and a Docker image build on every push and pull request.
 

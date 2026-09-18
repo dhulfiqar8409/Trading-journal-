@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { logoutAction } from "@/actions/auth";
+import { LogoutButton } from "@/components/nav";
 import { requireUser } from "@/lib/auth";
 import { ChangePasswordForm } from "./change-password-form";
 
@@ -29,11 +30,7 @@ export default async function ChangePasswordPage() {
             Back to settings
           </Link>
         )}
-        <form action={logoutAction}>
-          <button type="submit" className="btn btn-sm">
-            Log out
-          </button>
-        </form>
+        <LogoutButton action={logoutAction} compact />
       </div>
     </>
   );

@@ -3,7 +3,7 @@
 import { setupAction } from "@/actions/auth";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TimeZoneSelect } from "@/components/timezone-select";
-import { USERNAME_HINT } from "@/lib/users";
+import { PASSWORD_HINT, PASSWORD_MAX_BYTES, PASSWORD_MIN_LENGTH, USERNAME_HINT } from "@/lib/users";
 
 export function SetupForm({ token }: { token?: string }) {
   const { state, onSubmit, pending } = useActionForm(setupAction);
@@ -51,11 +51,12 @@ export function SetupForm({ token }: { token?: string }) {
           name="password"
           type="password"
           autoComplete="new-password"
-          minLength={10}
+          minLength={PASSWORD_MIN_LENGTH}
+          maxLength={PASSWORD_MAX_BYTES}
           required
           className={fieldClass(state, "password")}
         />
-        <p className="hint">At least 10 characters.</p>
+        <p className="hint">{PASSWORD_HINT}</p>
         <FieldError state={state} name="password" />
       </div>
       <div>

@@ -1,12 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { NextResponse } from "next/server";
+import { safeFilename } from "@/lib/attachments";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { uploadPath } from "@/lib/uploads";
 
 export const dynamic = "force-dynamic";
 
-/** Serves a screenshot to its owner only. Files never live under /public. */
+/** Serves a screenshot to its owner only, uncached. Files never live under /public. */
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -27,8 +28,8 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     headers: {
       "Content-Type": attachment.mimeType,
       "Content-Length": String(data.length),
-      "Content-Disposition": `inline; filename="${attachment.filename.replace(/["\r\n]/g, "")}"`,
-      "Cache-Control": "private, max-age=3600",
+      "Content-Disposition": `inline; filename="${safeFilename(attachment.filename)}"`,
+      "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
     },
   });

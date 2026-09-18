@@ -2,6 +2,7 @@
 
 import { changePasswordAction } from "@/actions/auth";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
+import { PASSWORD_HINT, PASSWORD_MAX_BYTES, PASSWORD_MIN_LENGTH } from "@/lib/users";
 
 export function ChangePasswordForm({ forced }: { forced: boolean }) {
   const { state, onSubmit, pending } = useActionForm(changePasswordAction);
@@ -30,11 +31,12 @@ export function ChangePasswordForm({ forced }: { forced: boolean }) {
           name="newPassword"
           type="password"
           autoComplete="new-password"
-          minLength={10}
+          minLength={PASSWORD_MIN_LENGTH}
+          maxLength={PASSWORD_MAX_BYTES}
           required
           className={fieldClass(state, "newPassword")}
         />
-        <p className="hint">At least 10 characters.</p>
+        <p className="hint">{PASSWORD_HINT}</p>
         <FieldError state={state} name="newPassword" />
       </div>
       <div>

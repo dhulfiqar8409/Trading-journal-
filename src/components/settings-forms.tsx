@@ -3,6 +3,7 @@
 import { changePasswordAction, updateProfileAction } from "@/actions/auth";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TimeZoneSelect } from "@/components/timezone-select";
+import { PASSWORD_HINT, PASSWORD_MAX_BYTES, PASSWORD_MIN_LENGTH } from "@/lib/users";
 
 export function ProfileForm({ name, timeZone, displayMode }: { name: string; timeZone: string; displayMode: "R" | "USD" }) {
   const { state, onSubmit, pending } = useActionForm(updateProfileAction);
@@ -56,7 +57,17 @@ export function PasswordForm() {
         <label htmlFor="cp-new" className="label">
           New password
         </label>
-        <input id="cp-new" name="newPassword" type="password" autoComplete="new-password" minLength={10} required className={fieldClass(state, "newPassword")} />
+        <input
+          id="cp-new"
+          name="newPassword"
+          type="password"
+          autoComplete="new-password"
+          minLength={PASSWORD_MIN_LENGTH}
+          maxLength={PASSWORD_MAX_BYTES}
+          required
+          className={fieldClass(state, "newPassword")}
+        />
+        <p className="hint">{PASSWORD_HINT}</p>
         <FieldError state={state} name="newPassword" />
       </div>
       <div>

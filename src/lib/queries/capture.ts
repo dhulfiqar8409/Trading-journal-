@@ -1,7 +1,7 @@
 import "server-only";
 import { Decimal, toPlainString } from "@/lib/decimal";
 import { db } from "@/lib/db";
-import { deleteUploads } from "@/lib/uploads";
+import { prunePendingUploads } from "@/lib/queries/storage";
 
 export interface CapturePrefill {
   symbol: string;
@@ -57,16 +57,9 @@ export async function loadCapturePrefill(userId: string): Promise<{ prefill: Cap
   };
 }
 
-/** The shared screenshot waiting to be attached, and housekeeping for stale ones. */
+/** The shared screenshot waiting to be attached, after the housekeeping for stale ones. */
 export async function loadDraft(userId: string, draftId: string | undefined): Promise<DraftDTO | null> {
-  const stale = await db.pendingUpload.findMany({
-    where: { userId, createdAt: { lt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) } },
-    select: { id: true, storedName: true },
-  });
-  if (stale.length) {
-    await db.pendingUpload.deleteMany({ where: { id: { in: stale.map((s) => s.id) } } });
-    await deleteUploads(userId, stale.map((s) => s.storedName));
-  }
+  await prunePendingUploads();
   if (!draftId) return null;
   const pending = await db.pendingUpload.findFirst({ where: { id: draftId, userId }, select: { id: true, filename: true, note: true } });
   if (!pending) return null;

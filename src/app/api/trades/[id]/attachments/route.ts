@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
+import { safeFilename } from "@/lib/attachments";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { requireSameOrigin } from "@/lib/origin-guard";
+import { checkStorage, prunePendingUploads } from "@/lib/queries/storage";
 import { serializeAttachment } from "@/lib/serialize";
 import { MAX_UPLOAD_BYTES, saveUpload, sniffImageType } from "@/lib/uploads";
 
 export const dynamic = "force-dynamic";
 
-function safeFilename(name: string): string {
-  const base = name.split(/[\\/]/).pop() ?? "screenshot";
-  return base.replace(/[^\w.\- ()]/g, "_").slice(0, 200) || "screenshot";
-}
-
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  const refused = requireSameOrigin(request);
+  if (refused) return refused;
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await context.params;
@@ -33,6 +33,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (bytes.length > MAX_UPLOAD_BYTES) return NextResponse.json({ error: "Images must be 10 MB or smaller" }, { status: 413 });
   const mimeType = sniffImageType(bytes);
   if (!mimeType) return NextResponse.json({ error: "Only PNG, JPEG, GIF and WebP images are accepted" }, { status: 415 });
+
+  // Forgotten share drafts stop counting before the quota is measured.
+  await prunePendingUploads();
+  const storage = await checkStorage(user.id, bytes.length);
+  if (!storage.ok) return NextResponse.json({ error: storage.message }, { status: 413 });
 
   const storedName = await saveUpload(user.id, bytes, mimeType);
   const attachment = await db.attachment.create({

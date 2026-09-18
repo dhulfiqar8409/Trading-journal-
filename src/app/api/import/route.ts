@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { parseImportRow, type ParsedImportRow } from "@/lib/csv";
 import { db } from "@/lib/db";
 import { hashKey } from "@/lib/import-hash";
+import { requireSameOrigin } from "@/lib/origin-guard";
 import { importRequestSchema } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +13,8 @@ export const dynamic = "force-dynamic";
 const CHUNK = 500;
 
 export async function POST(request: Request) {
+  const refused = requireSameOrigin(request);
+  if (refused) return refused;
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

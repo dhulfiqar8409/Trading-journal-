@@ -13,6 +13,17 @@ export const USERNAME_HINT = "3-32 characters: letters, digits, dot, underscore 
 
 export type UserRole = "ADMIN" | "USER";
 
+export const PASSWORD_MIN_LENGTH = 10;
+/** bcrypt hashes the first 72 bytes only, so anything longer would be accepted and then silently ignored. */
+export const PASSWORD_MAX_BYTES = 72;
+export const PASSWORD_HINT = `At least ${PASSWORD_MIN_LENGTH} characters and at most ${PASSWORD_MAX_BYTES} bytes (accents, symbols and emoji count for more than one).`;
+export const PASSWORD_TOO_LONG = `Passwords are limited to ${PASSWORD_MAX_BYTES} bytes because the hash reads no further: use up to ${PASSWORD_MAX_BYTES} plain characters, fewer with accents, symbols or emoji.`;
+
+/** The password's length as the hash sees it: UTF-8 bytes, not characters. */
+export function passwordByteLength(password: string): number {
+  return new TextEncoder().encode(password).length;
+}
+
 /** Usernames are case-insensitive: they are stored and compared in lowercase. */
 export function normalizeUsername(input: string): string {
   return input.trim().toLowerCase();

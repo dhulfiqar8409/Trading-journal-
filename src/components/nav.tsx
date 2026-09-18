@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { forgetServiceWorkerSession } from "@/components/pwa";
 import {
   CloseIcon,
   DashboardIcon,
@@ -145,18 +146,19 @@ export function BottomNav({ logout, isAdmin = false }: { logout: React.ReactNode
   );
 }
 
-export function LogoutButton({ action, compact = false }: { action: () => Promise<void>; compact?: boolean }) {
+/** Signs out: the service worker forgets the session first, then the action ends it on the server. */
+export function LogoutButton({ action, compact = false, className }: { action: () => Promise<void>; compact?: boolean; className?: string }) {
+  const size = compact ? 16 : 20;
   return (
-    <form action={action}>
+    <form action={action} onSubmit={forgetServiceWorkerSession}>
       <button
         type="submit"
         className={
-          compact
-            ? "btn btn-sm"
-            : "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-ink-2 hover:bg-surface-2 hover:text-ink"
+          className ??
+          (compact ? "btn btn-sm" : "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-ink-2 hover:bg-surface-2 hover:text-ink")
         }
       >
-        <LogoutIcon className="text-muted" width={compact ? 16 : 20} height={compact ? 16 : 20} />
+        <LogoutIcon className="text-muted" width={size} height={size} />
         Log out
       </button>
     </form>

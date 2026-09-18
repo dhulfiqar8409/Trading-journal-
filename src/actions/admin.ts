@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, type CurrentUser } from "@/lib/auth";
+import { withAccountLock, type AccountTx } from "@/lib/account-lock";
+import { requireAdmin } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { failure, formToObject, success, zodErrorToResult, type ActionState } from "@/lib/form";
 import { hashPassword } from "@/lib/password";
@@ -16,7 +17,9 @@ const USERS_PATH = "/admin/users";
  * Admin actions. Every one re-checks the session and the ADMIN role on the
  * server; the admin manages accounts and never touches another user's
  * journal data. The last active admin cannot be removed or demoted, and an
- * admin cannot act on their own account here.
+ * admin cannot act on their own account here. Changes that could remove the
+ * last admin run under the account lock, so two of them cannot both pass
+ * the check.
  */
 
 export async function createUserAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -77,17 +80,18 @@ export async function resetPasswordAction(_prev: ActionState, formData: FormData
   });
 }
 
-type Guarded =
-  | { ok: false; error: string }
-  | { ok: true; admin: CurrentUser; target: { id: string; username: string; role: "ADMIN" | "USER"; isActive: boolean } };
+type Target = { id: string; username: string; role: "ADMIN" | "USER"; isActive: boolean };
+type Guarded = { ok: false; error: string } | { ok: true; target: Target };
 
-async function guardedTarget(change: AccountChange, userId: string): Promise<Guarded> {
-  const admin = await requireAdmin();
-  const target = await db.user.findUnique({ where: { id: userId }, select: { id: true, username: true, role: true, isActive: true } });
+const TARGET_SELECT = { id: true, username: true, role: true, isActive: true } as const;
+
+/** The account to change, looked up inside the locked transaction so the admin count it is checked against cannot move. */
+async function guardedTarget(tx: AccountTx, change: AccountChange, actorId: string, userId: string): Promise<Guarded> {
+  const target = await tx.user.findUnique({ where: { id: userId }, select: TARGET_SELECT });
   if (!target) return { ok: false, error: "That account no longer exists." };
-  const activeAdminCount = await db.user.count({ where: { role: "ADMIN", isActive: true } });
-  const error = accountChangeError(change, { actorId: admin.id, target, activeAdminCount });
-  return error ? { ok: false, error } : { ok: true, admin, target };
+  const activeAdminCount = await tx.user.count({ where: { role: "ADMIN", isActive: true } });
+  const error = accountChangeError(change, { actorId, target, activeAdminCount });
+  return error ? { ok: false, error } : { ok: true, target };
 }
 
 function userIdFrom(formData: FormData): string | null {
@@ -99,51 +103,67 @@ export async function setActiveAction(_prev: ActionState, formData: FormData): P
   const userId = userIdFrom(formData);
   if (!userId) return failure("Missing account.");
   const active = formData.get("active") === "1";
+  const admin = await requireAdmin();
   if (active) {
-    await requireAdmin();
     const target = await db.user.findUnique({ where: { id: userId }, select: { id: true, username: true } });
     if (!target) return failure("That account no longer exists.");
     await db.user.update({ where: { id: target.id }, data: { isActive: true } });
     revalidatePath(USERS_PATH);
     return success(`@${target.username} can sign in again.`);
   }
-  const guarded = await guardedTarget("deactivate", userId);
-  if (!guarded.ok) return failure(guarded.error);
-  // Bumping the version rejects the account's existing sessions at their next request.
-  await db.user.update({ where: { id: guarded.target.id }, data: { isActive: false, sessionVersion: { increment: 1 } } });
+  const result = await withAccountLock(async (tx) => {
+    const guarded = await guardedTarget(tx, "deactivate", admin.id, userId);
+    if (!guarded.ok) return guarded;
+    // Bumping the version rejects the account's existing sessions at their next request.
+    await tx.user.update({ where: { id: guarded.target.id }, data: { isActive: false, sessionVersion: { increment: 1 } } });
+    return guarded;
+  });
+  if (!result.ok) return failure(result.error);
   revalidatePath(USERS_PATH);
-  return success(`@${guarded.target.username} deactivated and signed out.`);
+  return success(`@${result.target.username} deactivated and signed out.`);
 }
 
 export async function setRoleAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const userId = userIdFrom(formData);
   const role = formData.get("role");
   if (!userId || (role !== USER_ROLES[0] && role !== USER_ROLES[1])) return failure("Missing account or role.");
-  const guarded = role === "USER" ? await guardedTarget("demote", userId) : await guardedPromotion(userId);
-  if (!guarded.ok) return failure(guarded.error);
-  if (guarded.target.role === role) return success();
-  await db.user.update({ where: { id: guarded.target.id }, data: { role } });
+  const admin = await requireAdmin();
+  const result = await withAccountLock(async (tx) => {
+    // Promotions cannot remove an admin, so only demotions go through the last-admin rule.
+    const guarded = role === "USER" ? await guardedTarget(tx, "demote", admin.id, userId) : await plainTarget(tx, userId);
+    if (!guarded.ok) return guarded;
+    if (guarded.target.role !== role) await tx.user.update({ where: { id: guarded.target.id }, data: { role } });
+    return guarded;
+  });
+  if (!result.ok) return failure(result.error);
+  if (result.target.role === role) return success();
   revalidatePath(USERS_PATH);
-  return success(`@${guarded.target.username} is now ${role === "ADMIN" ? "an admin" : "a user"}.`);
+  return success(`@${result.target.username} is now ${role === "ADMIN" ? "an admin" : "a user"}.`);
 }
 
-async function guardedPromotion(userId: string): Promise<Guarded> {
-  const admin = await requireAdmin();
-  const target = await db.user.findUnique({ where: { id: userId }, select: { id: true, username: true, role: true, isActive: true } });
-  if (!target) return { ok: false, error: "That account no longer exists." };
-  return { ok: true, admin, target };
+async function plainTarget(tx: AccountTx, userId: string): Promise<Guarded> {
+  const target = await tx.user.findUnique({ where: { id: userId }, select: TARGET_SELECT });
+  return target ? { ok: true, target } : { ok: false, error: "That account no longer exists." };
 }
 
 /** Removes the account with everything it logged: trades, days, rules, tags, links, presets and screenshot files. */
 export async function deleteUserAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const userId = userIdFrom(formData);
   if (!userId) return failure("Missing account.");
-  const guarded = await guardedTarget("delete", userId);
-  if (!guarded.ok) return failure(guarded.error);
-  const { target } = guarded;
-  // Trades reference accounts with RESTRICT, so they go first; the user row cascades to the rest.
-  await db.$transaction([db.trade.deleteMany({ where: { userId: target.id } }), db.user.delete({ where: { id: target.id } })]);
-  await deleteUserUploads(target.id);
+  const admin = await requireAdmin();
+  const result = await withAccountLock(
+    async (tx) => {
+      const guarded = await guardedTarget(tx, "delete", admin.id, userId);
+      if (!guarded.ok) return guarded;
+      // Trades reference accounts with RESTRICT, so they go first; the user row cascades to the rest.
+      await tx.trade.deleteMany({ where: { userId: guarded.target.id } });
+      await tx.user.delete({ where: { id: guarded.target.id } });
+      return guarded;
+    },
+    { timeoutMs: 60_000 },
+  );
+  if (!result.ok) return failure(result.error);
+  await deleteUserUploads(result.target.id);
   revalidatePath(USERS_PATH);
-  return success(`Account @${target.username} and everything it logged are gone.`);
+  return success(`Account @${result.target.username} and everything it logged are gone.`);
 }

@@ -9,8 +9,8 @@ export default function OfflinePage() {
       <LogoMark width={32} height={32} />
       <h1 className="page-title mt-4">Offline</h1>
       <p className="mt-2 max-w-sm text-sm text-muted">
-        Darkpools needs a connection to load and save trades. Pages you opened recently are still available; new entries have to wait
-        until you are back online.
+        Darkpools needs a connection to load and save trades. Nothing from your journal is kept on this device, so try again once
+        you are back online.
       </p>
       <Link href="/today" className="btn mt-5">
         Try again

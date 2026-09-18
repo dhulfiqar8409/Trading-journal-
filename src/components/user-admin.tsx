@@ -6,7 +6,7 @@ import { ConfirmSubmit } from "@/components/confirm-button";
 import { CopyField } from "@/components/copy-field";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import type { ActionState } from "@/lib/form";
-import { USERNAME_HINT } from "@/lib/users";
+import { PASSWORD_MAX_BYTES, PASSWORD_MIN_LENGTH, USERNAME_HINT } from "@/lib/users";
 
 export interface AdminUserDTO {
   id: string;
@@ -118,10 +118,10 @@ function CreateUserFields({ state }: { state: ActionState }) {
               name="password"
               type="text"
               autoComplete="off"
-              minLength={10}
-              maxLength={200}
+              minLength={PASSWORD_MIN_LENGTH}
+              maxLength={PASSWORD_MAX_BYTES}
               required
-              placeholder="At least 10 characters"
+              placeholder={`${PASSWORD_MIN_LENGTH} to ${PASSWORD_MAX_BYTES} characters`}
               className={fieldClass(state, "password")}
             />
             <FieldError state={state} name="password" />
@@ -144,7 +144,7 @@ function ResetPasswordForm({ user }: { user: AdminUserDTO }) {
             <label htmlFor={`rp-${user.id}`} className="label">
               Temporary password <span className="font-normal text-muted">(leave empty to generate)</span>
             </label>
-            <input id={`rp-${user.id}`} name="password" type="text" autoComplete="off" minLength={10} maxLength={200} className={fieldClass(state, "password")} />
+            <input id={`rp-${user.id}`} name="password" type="text" autoComplete="off" minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_BYTES} className={fieldClass(state, "password")} />
             <FieldError state={state} name="password" />
           </div>
         ) : null}

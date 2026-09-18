@@ -36,7 +36,7 @@ export async function GET() {
     mistakes: t.mistakes ?? "",
     createdAt: t.createdAt.toISOString(),
   }));
-  const csv = Papa.unparse(rows, { newline: "\r\n" });
+  const csv = Papa.unparse(rows, { newline: "\r\n", escapeFormulae: true });
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   return new Response(`﻿${csv}`, {
     headers: {

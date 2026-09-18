@@ -3,51 +3,61 @@
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { hasAnyUser, requireUser } from "@/lib/auth";
+import { withAccountLock } from "@/lib/account-lock";
+import { getSessionUser, hasAnyUser, requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { failure, formToObject, safeRedirectPath, success, zodErrorToResult, type ActionState } from "@/lib/form";
 import { dummyHash, hashPassword, verifyPassword } from "@/lib/password";
-import { clientIpFrom, isLockedOut, LOCKOUT_WINDOW_MS, setupTokenMatches, setupTokenRequired } from "@/lib/security";
+import { clientIpFrom, loginLockedOut, LOCKOUT_WINDOW_MS, SETUP_TOKEN_MIN_LENGTH, setupGate, setupTokenMatches } from "@/lib/security";
 import { clearSessionCookie, setSessionCookie } from "@/lib/session";
 import { PASSWORD_CHANGE_PATH } from "@/lib/session-token";
 import { changePasswordSchema, loginSchema, profileSchema, setupSchema } from "@/lib/validation";
 
-/** First run: creates the admin account. Disabled as soon as any account exists. */
+const SETUP_DONE = "Setup has already been completed. Sign in instead.";
+const SETUP_UNCONFIGURED = `This server is missing its setup token. Set SETUP_TOKEN to at least ${SETUP_TOKEN_MIN_LENGTH} characters and restart the server.`;
+
+/**
+ * First run: creates the admin account. Disabled as soon as any account
+ * exists, and refused outright by a production server without a usable
+ * SETUP_TOKEN.
+ */
 export async function setupAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  if (await hasAnyUser()) return failure("Setup has already been completed. Sign in instead.");
+  if (await hasAnyUser()) return failure(SETUP_DONE);
+  const gate = setupGate(process.env.SETUP_TOKEN);
+  if (gate === "unconfigured") return failure(SETUP_UNCONFIGURED);
   const parsed = setupSchema.safeParse(formToObject(formData));
   if (!parsed.success) return zodErrorToResult(parsed.error);
   const { username, name, email, password, timeZone, token } = parsed.data;
-  if (setupTokenRequired(process.env.SETUP_TOKEN) && !setupTokenMatches(token, process.env.SETUP_TOKEN)) {
+  if (gate === "token" && !setupTokenMatches(token, process.env.SETUP_TOKEN)) {
     return failure("The setup link from the server setup is required.");
   }
 
-  let user: { id: string; sessionVersion: number };
+  let user: { id: string; sessionVersion: number } | null;
   try {
     const passwordHash = await hashPassword(password);
-    user = await db.user.create({
-      data: {
-        username,
-        email: email ?? null,
-        name,
-        passwordHash,
-        role: "ADMIN",
-        passwordChangedAt: new Date(),
-        lastLoginAt: new Date(),
-        timeZone: timeZone ?? "UTC",
-        accounts: { create: { name: "Main", currency: "USD", isDefault: true } },
-      },
-      select: { id: true, sessionVersion: true },
+    // Two first-run submissions take turns on the account lock: only the first finds no account.
+    user = await withAccountLock(async (tx) => {
+      if ((await tx.user.count()) > 0) return null;
+      return tx.user.create({
+        data: {
+          username,
+          email: email ?? null,
+          name,
+          passwordHash,
+          role: "ADMIN",
+          passwordChangedAt: new Date(),
+          lastLoginAt: new Date(),
+          timeZone: timeZone ?? "UTC",
+          accounts: { create: { name: "Main", currency: "USD", isDefault: true } },
+        },
+        select: { id: true, sessionVersion: true },
+      });
     });
   } catch (error) {
     console.error("setup failed", error);
     return failure("Could not create the account. Please try again.");
   }
-  // Two first-run submissions racing each other: only the first one stands.
-  if ((await db.user.count({ where: { id: { not: user.id } } })) > 0) {
-    await db.user.delete({ where: { id: user.id } });
-    return failure("Setup has already been completed. Sign in instead.");
-  }
+  if (!user) return failure(SETUP_DONE);
   await setSessionCookie({ userId: user.id, sessionVersion: user.sessionVersion, mustChangePassword: false });
   redirect("/");
 }
@@ -56,9 +66,11 @@ const GENERIC_LOGIN_ERROR = "Invalid username or password.";
 
 /**
  * Sign in by username (or the account's email) with a lockout: five failures
- * within fifteen minutes for an identifier or for a client address block
- * further attempts for the rest of the window. The response never says
- * whether an account exists.
+ * within fifteen minutes for an identifier from one client address, or five
+ * from that address for any identifier, block further attempts from the
+ * address for the rest of the window. Failures are counted per address, so
+ * wrong passwords from elsewhere never lock the real owner out. The response
+ * never says whether an account exists.
  */
 export async function loginAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const parsed = loginSchema.safeParse(formToObject(formData));
@@ -69,17 +81,13 @@ export async function loginAction(_prev: ActionState, formData: FormData): Promi
   const now = new Date();
   const since = new Date(now.getTime() - LOCKOUT_WINDOW_MS);
 
-  // Prune the window's history and look up recent failures for this identifier and this address.
+  // Prune the window's history and look up this address's recent failures (this identifier's are among them).
   await db.loginAttempt.deleteMany({ where: { createdAt: { lt: since } } });
   const recent = await db.loginAttempt.findMany({
-    where: { OR: [{ identifier }, { ip }], createdAt: { gte: since } },
+    where: { ip, createdAt: { gte: since } },
     select: { identifier: true, ip: true, createdAt: true },
   });
-  const byIdentifier = recent.filter((a) => a.identifier === identifier).map((a) => a.createdAt);
-  const byIp = recent.filter((a) => a.ip === ip).map((a) => a.createdAt);
-  if (isLockedOut(byIdentifier, now) || isLockedOut(byIp, now)) {
-    return failure(GENERIC_LOGIN_ERROR);
-  }
+  if (loginLockedOut(recent, identifier, ip, now)) return failure(GENERIC_LOGIN_ERROR);
 
   const user = await db.user.findFirst({
     where: identifier.includes("@") ? { email: identifier } : { username: identifier },
@@ -93,15 +101,22 @@ export async function loginAction(_prev: ActionState, formData: FormData): Promi
   // Only someone holding the right password learns that the account is switched off.
   if (!user.isActive) return failure("This account has been deactivated. Ask the admin to reactivate it.");
 
+  // A success clears this identifier's failures from this address only; the address total stays.
   await db.$transaction([
-    db.loginAttempt.deleteMany({ where: { OR: [{ identifier }, { ip }] } }),
+    db.loginAttempt.deleteMany({ where: { identifier, ip } }),
     db.user.update({ where: { id: user.id }, data: { lastLoginAt: now } }),
   ]);
   await setSessionCookie({ userId: user.id, sessionVersion: user.sessionVersion, mustChangePassword: user.mustChangePassword });
   redirect(user.mustChangePassword ? PASSWORD_CHANGE_PATH : safeRedirectPath(next));
 }
 
+/**
+ * Signs the account out everywhere: its session version moves on, so this
+ * cookie and any copy of it stop working, and the cookie is cleared here.
+ */
 export async function logoutAction(): Promise<void> {
+  const user = await getSessionUser();
+  if (user) await db.user.updateMany({ where: { id: user.id }, data: { sessionVersion: { increment: 1 } } });
   await clearSessionCookie();
   redirect("/login");
 }

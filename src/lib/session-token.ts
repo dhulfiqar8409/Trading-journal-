@@ -1,7 +1,23 @@
 import { SignJWT, jwtVerify } from "jose";
 
-export const SESSION_COOKIE = "darkpools_session";
+/**
+ * In production the cookie carries the __Host- prefix: browsers then only
+ * accept it over HTTPS, for the whole site and without a Domain attribute,
+ * so a sibling subdomain cannot plant or overwrite it. Development keeps the
+ * plain name because the prefix cannot be set over plain HTTP.
+ */
+export const SESSION_COOKIE = process.env.NODE_ENV === "production" ? "__Host-darkpools_session" : "darkpools_session";
 export const SESSION_DAYS = 30;
+
+/** Attributes every Set-Cookie for the session uses, clearing included (a __Host- cookie needs them to be accepted at all). */
+export function sessionCookieAttributes() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+  };
+}
 /** Where a session with a temporary password is sent before anything else. */
 export const PASSWORD_CHANGE_PATH = "/change-password";
 
