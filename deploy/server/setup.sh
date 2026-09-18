@@ -78,6 +78,10 @@ fi
 if ! grep -q '^SETUP_TOKEN=' "$BASE/shared/.env"; then
   echo "SETUP_TOKEN=$(openssl rand -hex 16)" >> "$BASE/shared/.env"
 fi
+# The app checks the Origin of state-changing requests against this value.
+if ! grep -q '^APP_ORIGIN=' "$BASE/shared/.env"; then
+  echo "APP_ORIGIN=https://darkpools.deeapps.net" >> "$BASE/shared/.env"
+fi
 chown root:www-data "$BASE/shared/.env"; chmod 640 "$BASE/shared/.env"
 chown -R www-data:www-data "$BASE/shared/uploads"
 
