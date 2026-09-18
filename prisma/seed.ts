@@ -182,6 +182,7 @@ async function main() {
         status: metrics.status,
         pnl: metrics.pnl ? metrics.pnl.toDecimalPlaces(8).toFixed() : null,
         rMultiple: metrics.rMultiple ? metrics.rMultiple.toDecimalPlaces(8).toFixed() : null,
+        plannedRisk: metrics.risk ? metrics.risk.toDecimalPlaces(8).toFixed() : null,
         stopPrice,
         targetPrice,
         rating: isOpen ? null : Math.min(5, Math.max(1, Math.round(between(1, 5)))),

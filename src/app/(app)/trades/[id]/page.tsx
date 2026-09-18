@@ -4,7 +4,8 @@ import { deleteAttachmentAction, deleteTradeAction, updateTradeAction } from "@/
 import { AttachmentUploader } from "@/components/attachments";
 import { ConfirmSubmit } from "@/components/confirm-button";
 import { Markdown } from "@/components/markdown";
-import { Pnl, RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
+import { PnlFigure } from "@/components/figure";
+import { RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
 import { TagChip } from "@/components/tag-chip";
 import { TradeForm } from "@/components/trade-form";
 import { requireUser } from "@/lib/auth";
@@ -83,11 +84,11 @@ export default async function TradeDetailPage({
       <div className="card card-pad">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-xs text-muted">{trade.status === "OPEN" ? "Open position" : "Net P&L"}</p>
+            <p className="text-xs text-muted">{trade.status === "OPEN" ? "Open position" : user.displayMode === "R" ? "Net R" : "Net P&L"}</p>
             {trade.status === "OPEN" ? (
               <p className="text-3xl font-semibold text-ink-2">—</p>
             ) : (
-              <Pnl value={trade.pnl} currency={trade.currency} className="text-3xl font-semibold" />
+              <PnlFigure pnl={trade.pnl} r={trade.rMultiple} currency={trade.currency} mode={user.displayMode} className="text-3xl font-semibold" />
             )}
           </div>
           <div className="flex gap-6 text-sm">

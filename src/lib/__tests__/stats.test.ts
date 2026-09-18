@@ -99,6 +99,38 @@ describe("summarize", () => {
   });
 });
 
+describe("R-based aggregates", () => {
+  it("only counts trades with a stop and keeps currency figures for the rest", () => {
+    const trades: StatsTrade[] = [
+      trade("100", "2024-02-01T00:00:00Z", { rMultiple: "2" }),
+      trade("-50", "2024-02-02T00:00:00Z", { rMultiple: "-1" }),
+      trade("30", "2024-02-03T00:00:00Z"), // no stop
+      trade("-20", "2024-02-04T00:00:00Z", { rMultiple: "-0.5" }),
+    ];
+    const s = summarize(trades);
+    expect(s.tradeCount).toBe(4);
+    expect(s.rTradeCount).toBe(3);
+    expect(s.netR.toFixed()).toBe("0.5");
+    expect(s.expectancyR!.toFixed(4)).toBe("0.1667");
+    expect(s.avgWinR!.toFixed()).toBe("2");
+    expect(s.avgLossR!.toFixed()).toBe("-0.75");
+    expect(s.maxDrawdownR.toFixed()).toBe("1.5");
+    const curve = equityCurve(trades);
+    expect(curve.map((p) => p.cumulativeR.toFixed())).toEqual(["2", "1", "1", "0.5"]);
+    expect(dailyPnl(trades).map((d) => d.r.toFixed())).toEqual(["2", "-1", "0", "-0.5"]);
+    expect(breakdownBySymbol(trades)[0].netR.toFixed()).toBe("0.5");
+    expect(breakdownBySymbol(trades)[0].rTradeCount).toBe(3);
+  });
+
+  it("reports zero R figures when no trade has a stop", () => {
+    const s = summarize([trade("10", "2024-02-01T00:00:00Z")]);
+    expect(s.rTradeCount).toBe(0);
+    expect(s.netR.toFixed()).toBe("0");
+    expect(s.expectancyR).toBeNull();
+    expect(s.maxDrawdownR.toFixed()).toBe("0");
+  });
+});
+
 describe("maxDrawdown", () => {
   it("is zero for an empty or all-winning sequence", () => {
     expect(maxDrawdown([]).toFixed()).toBe("0");

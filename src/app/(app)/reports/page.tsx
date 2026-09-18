@@ -1,10 +1,11 @@
 import Link from "next/link";
+import { EdgeDecayChart } from "@/components/charts/edge-decay";
 import { WeeklyAdherenceChart } from "@/components/charts/weekly-adherence";
 import { Pnl, RMultiple } from "@/components/pnl";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { formatDateKey, formatMoney, formatPercent } from "@/lib/format";
-import { loadAdherenceReport, type GroupStatsDTO } from "@/lib/queries/reports";
+import { formatDateKey, formatMoney, formatPercent, formatR } from "@/lib/format";
+import { loadAdherenceReport, loadEdgeDecay, type GroupStatsDTO } from "@/lib/queries/reports";
 import { isoWeekLabel } from "@/lib/weeks";
 
 export const metadata = { title: "Reports" };
@@ -38,11 +39,13 @@ function SplitColumn({ title, stats, currency }: { title: string; stats: GroupSt
 
 export default async function ReportsPage() {
   const user = await requireUser();
-  const [report, account] = await Promise.all([
+  const [report, account, decay] = await Promise.all([
     loadAdherenceReport(user.id, user.timeZone),
     db.account.findFirst({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }], select: { currency: true } }),
+    loadEdgeDecay(user.id),
   ]);
   const currency = account?.currency ?? "USD";
+  const flagged = decay.filter((d) => d.crossedBelowZero);
 
   return (
     <div className="flex flex-col gap-4">
@@ -140,6 +143,72 @@ export default async function ReportsPage() {
             </tbody>
           </table>
         )}
+      </section>
+
+      <section className="card card-pad min-w-0" aria-label="Edge decay">
+        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold">Edge decay per setup</h2>
+          <p className="text-xs text-muted">Rolling 20-trade expectancy in R with a 95% band</p>
+        </div>
+        {flagged.length ? (
+          <ul className="mb-3 flex flex-col gap-1">
+            {flagged.map((d) => (
+              <li key={d.setupId} className="rounded-lg border border-warn/40 bg-surface-2 px-3 py-2 text-sm">
+                <span className="font-medium">{d.name}</span> <span className="text-ink-2">— {d.suggestion}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {decay.length === 0 ? (
+          <p className="text-sm text-muted">Create setup tags and attach them to trades with stops to track the edge of each setup.</p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {decay.slice(0, 6).map((d) => (
+              <div key={d.setupId} className="rounded-lg border border-line bg-canvas p-3">
+                <div className="mb-1 flex items-center justify-between gap-2 text-sm">
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: d.color }} aria-hidden />
+                    {d.name}
+                  </span>
+                  <span className="text-xs text-muted">
+                    {d.tradeCount} trade{d.tradeCount === 1 ? "" : "s"}
+                    {d.latest ? ` · now ${formatR(d.latest.mean)}` : ""}
+                  </span>
+                </div>
+                <EdgeDecayChart setup={d} timeZone={user.timeZone} />
+              </div>
+            ))}
+          </div>
+        )}
+        {decay.length ? (
+          <details className="mt-2 text-sm">
+            <summary className="cursor-pointer text-xs text-muted hover:text-ink">Show as table</summary>
+            <table className="table mt-2">
+              <thead>
+                <tr>
+                  <th>Setup</th>
+                  <th className="text-right">Trades</th>
+                  <th className="text-right">Rolling R</th>
+                  <th className="text-right">95% band</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {decay.map((d) => (
+                  <tr key={d.setupId}>
+                    <td className="font-medium">{d.name}</td>
+                    <td className="num text-right">{d.tradeCount}</td>
+                    <td className="text-right">
+                      <RMultiple value={d.latest?.mean ?? null} />
+                    </td>
+                    <td className="num text-right text-ink-2">{d.latest ? `${formatR(d.latest.lower)} to ${formatR(d.latest.upper)}` : "—"}</td>
+                    <td className="text-xs text-ink-2">{d.crossedBelowZero ? "Crossed below zero" : d.latest ? (d.latest.mean < 0 ? "Negative" : "Positive") : "Too few trades"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        ) : null}
       </section>
 
       <section className="card card-pad min-w-0" aria-label="Tilt ledger">

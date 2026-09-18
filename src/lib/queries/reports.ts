@@ -2,7 +2,50 @@ import "server-only";
 import { adherenceSplit, overallAdherence, ruleCosts, weeklyAdherence, type AdherenceTrade, type GroupStats } from "@/lib/adherence";
 import { db } from "@/lib/db";
 import { toNumber, toPlainString } from "@/lib/decimal";
+import { edgeDecay } from "@/lib/edge-decay";
 import { dateKeyInZone } from "@/lib/tz";
+
+export interface DecayPointDTO {
+  index: number;
+  t: number;
+  tradeId: string;
+  mean: number;
+  lower: number;
+  upper: number;
+  n: number;
+}
+
+export interface SetupDecayDTO {
+  setupId: string;
+  name: string;
+  color: string;
+  tradeCount: number;
+  points: DecayPointDTO[];
+  latest: DecayPointDTO | null;
+  crossedBelowZero: boolean;
+  suggestion: string | null;
+}
+
+export async function loadEdgeDecay(userId: string): Promise<SetupDecayDTO[]> {
+  const [setups, trades] = await Promise.all([
+    db.tag.findMany({ where: { userId, kind: "SETUP" }, orderBy: { name: "asc" }, select: { id: true, name: true, color: true } }),
+    db.trade.findMany({
+      where: { userId, status: "CLOSED", rMultiple: { not: null }, tags: { some: { kind: "SETUP" } } },
+      select: { id: true, exitAt: true, status: true, rMultiple: true, tags: { select: { id: true, kind: true } } },
+    }),
+  ]);
+  const colors = new Map(setups.map((s) => [s.id, s.color]));
+  return edgeDecay(
+    trades.map((t) => ({
+      id: t.id,
+      exitAt: t.exitAt,
+      status: t.status,
+      rMultiple: toPlainString(t.rMultiple),
+      setupIds: t.tags.filter((tag) => tag.kind === "SETUP").map((tag) => tag.id),
+    })),
+    setups,
+  ).map((d) => ({ ...d, color: colors.get(d.setupId) ?? "#6b7280" }));
+}
 
 export interface GroupStatsDTO {
   tradeCount: number;

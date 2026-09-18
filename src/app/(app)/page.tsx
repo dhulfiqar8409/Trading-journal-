@@ -2,12 +2,15 @@ import Link from "next/link";
 import { BreakdownTable } from "@/components/breakdown-table";
 import { CalendarHeatmap } from "@/components/calendar-heatmap";
 import { DailyPnlBars } from "@/components/charts/daily-pnl";
+import { EdgeRadar, EdgeTrend } from "@/components/charts/edge-radar";
 import { EquityCurve } from "@/components/charts/equity-curve";
+import { ThreeCurvesChart } from "@/components/charts/three-curves";
+import { PnlFigure } from "@/components/figure";
 import { StatTile } from "@/components/kpi";
 import { Pnl, SideBadge, StatusBadge } from "@/components/pnl";
 import { RangeSelector } from "@/components/range-selector";
 import { requireUser } from "@/lib/auth";
-import { formatDateKey, formatMoney, formatPercent, formatRatio, formatShortDate, pnlClass } from "@/lib/format";
+import { formatDateKey, formatMoney, formatPercent, formatR, formatRatio, formatShortDate } from "@/lib/format";
 import { loadDashboard, resolveMonth, resolveRange } from "@/lib/queries/dashboard";
 import { flattenSearchParams, withParams, type SearchParams } from "@/lib/search-params";
 
@@ -21,7 +24,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   const data = await loadDashboard(user.id, user.timeZone, range, month);
   const s = data.summary;
   const currency = data.currency;
+  const mode = user.displayMode;
   const money = (v: number | null, signed = true) => formatMoney(v, { currency, signed, compact: true });
+  const figure = (pnl: number | null, r: number | null) =>
+    mode === "R" ? (r === null ? "—" : formatR(r)) : money(pnl);
+  const stopsNote = s.rTradeCount < s.tradeCount ? `${s.rTradeCount} of ${s.tradeCount} trades have stops` : undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -32,11 +39,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
       <section className="card card-pad flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between" aria-label="Net P&L">
         <div>
-          <p className="text-xs text-ink-2">Net P&L</p>
-          <p className={`mt-1 text-4xl font-semibold leading-none sm:text-5xl ${pnlClass(s.netPnl)}`}>{money(s.netPnl)}</p>
+          <p className="text-xs text-ink-2">{mode === "R" ? "Net R" : "Net P&L"}</p>
+          <PnlFigure pnl={s.netPnl} r={s.rTradeCount ? s.netR : null} currency={currency} mode={mode} className="mt-1 text-4xl font-semibold leading-none sm:text-5xl" noStopLabel="no stops yet" />
           <p className="mt-2 text-xs text-muted">
             {range.label} · {s.tradeCount} closed trade{s.tradeCount === 1 ? "" : "s"}
             {s.openCount ? ` · ${s.openCount} open` : ""}
+            {stopsNote ? ` · ${stopsNote}` : ""} · tap a figure to switch units
           </p>
         </div>
         <dl className="grid grid-cols-3 gap-4 text-sm sm:text-right">
@@ -64,11 +72,16 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           value={s.profitFactor === null ? (s.grossProfit > 0 ? "∞" : "—") : formatRatio(s.profitFactor)}
           sub="Gross profit ÷ gross loss"
         />
-        <StatTile label="Expectancy" value={money(s.expectancy)} tone={s.expectancy} sub="Net P&L per closed trade" />
-        <StatTile label="Average win" value={money(s.avgWin)} tone={s.avgWin} sub={s.largestWin !== null ? `Largest ${money(s.largestWin)}` : undefined} />
-        <StatTile label="Average loss" value={money(s.avgLoss)} tone={s.avgLoss} sub={s.largestLoss !== null ? `Largest ${money(s.largestLoss)}` : undefined} />
-        <StatTile label="Max drawdown" value={money(-s.maxDrawdown, false)} tone={s.maxDrawdown > 0 ? -1 : 0} sub="Peak to trough of cumulative P&L" />
-        <StatTile label="Trades" value={String(s.tradeCount)} sub={`${s.openCount} open position${s.openCount === 1 ? "" : "s"}`} />
+        <StatTile label="Expectancy" value={figure(s.expectancy, s.expectancyR)} tone={mode === "R" ? s.expectancyR : s.expectancy} sub={mode === "R" ? "Net R per trade with a stop" : "Net P&L per closed trade"} />
+        <StatTile label="Average win" value={figure(s.avgWin, s.avgWinR)} tone={s.avgWin} sub={s.largestWin !== null ? `Largest ${money(s.largestWin)}` : undefined} />
+        <StatTile label="Average loss" value={figure(s.avgLoss, s.avgLossR)} tone={s.avgLoss} sub={s.largestLoss !== null ? `Largest ${money(s.largestLoss)}` : undefined} />
+        <StatTile
+          label="Max drawdown"
+          value={mode === "R" ? (s.rTradeCount ? formatR(-s.maxDrawdownR) : "—") : money(-s.maxDrawdown, false)}
+          tone={s.maxDrawdown > 0 ? -1 : 0}
+          sub={mode === "R" ? "Peak to trough of cumulative R" : "Peak to trough of cumulative P&L"}
+        />
+        <StatTile label="Trades" value={String(s.tradeCount)} sub={`${s.openCount} open · ${s.rTradeCount} with stops`} />
         <StatTile
           label="Streak"
           value={s.streak.kind === "NONE" ? "—" : `${s.streak.length} ${s.streak.kind === "WIN" ? "win" : "loss"}${s.streak.length === 1 ? "" : s.streak.kind === "WIN" ? "s" : "es"}`}
@@ -82,7 +95,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           <h2 className="text-sm font-semibold">Equity curve</h2>
           <p className="text-xs text-muted">Cumulative net P&L by exit time</p>
         </div>
-        <EquityCurve points={data.equity} currency={currency} timeZone={user.timeZone} />
+        <EquityCurve points={data.equity} currency={currency} timeZone={user.timeZone} mode={mode} />
         <details className="mt-2 text-sm">
           <summary className="cursor-pointer text-xs text-muted hover:text-ink">Show as table</summary>
           {data.equity.length ? (
@@ -120,13 +133,151 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         </details>
       </section>
 
+      <div className="grid gap-4 lg:grid-cols-[2fr_3fr]">
+        <section className="card card-pad min-w-0" aria-label="Edge Score">
+          <div className="mb-1 flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">Edge Score</h2>
+            <p className="text-xs text-muted">Last {data.edge.sampleSize} closed trades</p>
+          </div>
+          {data.edge.insufficient ? (
+            <p className="text-sm text-muted">
+              Needs at least {data.edge.minimum} closed trades; {data.edge.sampleSize} so far.
+            </p>
+          ) : (
+            <>
+              <div className="flex items-end gap-4">
+                <p className="text-5xl font-semibold leading-none">{data.edge.score}</p>
+                <p className="pb-1 text-xs text-muted">
+                  out of 100 across six factors
+                  <br />
+                  rolling {data.edge.window}-trade window
+                </p>
+              </div>
+              <EdgeRadar edge={data.edge} />
+              <p className="mb-1 text-xs text-muted">Score over time</p>
+              <EdgeTrend trend={data.edge.trend} timeZone={user.timeZone} />
+            </>
+          )}
+          <details className="mt-2 text-sm">
+            <summary className="cursor-pointer text-xs text-muted hover:text-ink">Show as table</summary>
+            <table className="table mt-2">
+              <thead>
+                <tr>
+                  <th>Factor</th>
+                  <th className="text-right">Value</th>
+                  <th className="text-right">Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.edge.factors.map((f) => (
+                  <tr key={f.key}>
+                    <td>{f.label}</td>
+                    <td className="num text-right text-ink-2">
+                      {f.raw === null ? "—" : f.key === "winRate" || f.key === "drawdown" || f.key === "consistency" ? formatPercent(f.raw, 0) : formatRatio(f.raw)}
+                    </td>
+                    <td className="num text-right">{Math.round(f.score)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-2 text-xs text-muted">
+              Anchors: win rate 20→70%, profit factor and payoff 0.5→3, drawdown as a share of gross profit 100%→0%, recovery factor 0→5, best day 60%→10% of net.
+            </p>
+          </details>
+        </section>
+
+        <section className="card card-pad min-w-0" aria-label="What mistakes cost">
+          <div className="mb-2 flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">What mistakes cost</h2>
+            <p className="text-xs text-muted">Drag across the chart to compare</p>
+          </div>
+          <ThreeCurvesChart points={data.curves.points} currency={currency} timeZone={user.timeZone} mode={mode} />
+          <dl className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
+            <div className="rounded-lg bg-canvas p-2">
+              <dt className="text-muted">Actual</dt>
+              <dd>
+                <PnlFigure pnl={data.curves.actual} r={data.curves.actualR} currency={currency} mode={mode} className="font-semibold" />
+              </dd>
+            </div>
+            <div className="rounded-lg bg-canvas p-2">
+              <dt className="text-muted">Mistakes removed ({data.curves.removedCount})</dt>
+              <dd>
+                <PnlFigure pnl={data.curves.mistakesRemoved} r={data.curves.mistakesRemovedR} currency={currency} mode={mode} className="font-semibold" />
+              </dd>
+            </div>
+            <div className="rounded-lg bg-canvas p-2">
+              <dt className="text-muted">Stops honoured ({data.curves.cappedCount})</dt>
+              <dd>
+                <PnlFigure pnl={data.curves.stopsHonoured} r={data.curves.stopsHonouredR} currency={currency} mode={mode} className="font-semibold" />
+              </dd>
+            </div>
+          </dl>
+          {data.mistakes.length ? (
+            <table className="table mt-3">
+              <thead>
+                <tr>
+                  <th>Mistake</th>
+                  <th className="text-right">Trades</th>
+                  <th className="text-right">Avg</th>
+                  <th className="text-right">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.mistakes.map((m) => (
+                  <tr key={m.tagId}>
+                    <td className="font-medium">{m.name}</td>
+                    <td className="num text-right text-ink-2">{m.count}</td>
+                    <td className="num text-right text-ink-2">{formatMoney(m.avgPnl, { currency, signed: true })}</td>
+                    <td className="text-right">
+                      <PnlFigure pnl={m.netPnl} r={m.rCount ? m.netR : null} currency={currency} mode={mode} noStopLabel="no stops" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="mt-3 text-xs text-muted">No mistake tags on closed trades in this range.</p>
+          )}
+          <details className="mt-2 text-sm">
+            <summary className="cursor-pointer text-xs text-muted hover:text-ink">Show curves as table</summary>
+            <div className="mt-2 max-h-72 overflow-auto">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Closed</th>
+                    <th>Symbol</th>
+                    <th className="text-right">Actual</th>
+                    <th className="text-right">No mistakes</th>
+                    <th className="text-right">Stops honoured</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.curves.points.map((p) => (
+                    <tr key={p.tradeId}>
+                      <td className="num">{formatShortDate(new Date(p.t), user.timeZone)}</td>
+                      <td>{p.symbol}</td>
+                      <td className="text-right">
+                        <Pnl value={mode === "R" ? null : p.actual} currency={currency} />
+                        {mode === "R" ? <span className="num">{formatR(p.actualR)}</span> : null}
+                      </td>
+                      <td className="num text-right">{mode === "R" ? formatR(p.mistakesRemovedR) : formatMoney(p.mistakesRemoved, { currency, signed: true })}</td>
+                      <td className="num text-right">{mode === "R" ? formatR(p.stopsHonouredR) : formatMoney(p.stopsHonoured, { currency, signed: true })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </section>
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="card card-pad min-w-0">
           <div className="mb-2 flex items-baseline justify-between">
             <h2 className="text-sm font-semibold">Daily P&L</h2>
             <p className="text-xs text-muted">Net, by exit day</p>
           </div>
-          <DailyPnlBars days={data.daily} currency={currency} />
+          <DailyPnlBars days={data.daily} currency={currency} mode={mode} />
           <details className="mt-2 text-sm">
             <summary className="cursor-pointer text-xs text-muted hover:text-ink">Show as table</summary>
             {data.daily.length ? (
@@ -163,12 +314,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
         <section className="card card-pad min-w-0 overflow-x-auto">
           <h2 className="mb-2 text-sm font-semibold">Top symbols</h2>
-          <BreakdownTable rows={data.topSymbols} currency={currency} keyLabel="Symbol" empty="No closed trades in this range." />
+          <BreakdownTable rows={data.topSymbols} currency={currency} keyLabel="Symbol" empty="No closed trades in this range." mode={mode} />
         </section>
 
         <section className="card card-pad min-w-0 overflow-x-auto">
           <h2 className="mb-2 text-sm font-semibold">P&L by tag</h2>
-          <BreakdownTable rows={data.byTag} currency={currency} keyLabel="Tag" empty="No tagged trades in this range." />
+          <BreakdownTable rows={data.byTag} currency={currency} keyLabel="Tag" empty="No tagged trades in this range." mode={mode} />
         </section>
       </div>
 
@@ -202,7 +353,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                     {t.status === "OPEN" ? <StatusBadge status={t.status} /> : null}
                     <span className="num truncate text-xs text-muted">{formatShortDate(t.entryAt, user.timeZone)}</span>
                   </div>
-                  <Pnl value={t.pnl} currency={t.currency} className="font-semibold" />
+                  <PnlFigure pnl={t.pnl} r={t.rMultiple} currency={t.currency} mode={mode} className="font-semibold" />
                 </Link>
               </li>
             ))}

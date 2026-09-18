@@ -1,6 +1,9 @@
 import "server-only";
+import { threeCurves } from "@/lib/curves";
 import { db } from "@/lib/db";
-import { toNumber } from "@/lib/decimal";
+import { toNumber, toPlainString } from "@/lib/decimal";
+import { edgeScore, edgeScoreTrend } from "@/lib/edge-score";
+import { mistakeCosts } from "@/lib/mistakes";
 import { serializeTrade, type TradeDTO } from "@/lib/serialize";
 import {
   breakdownBySymbol,
@@ -83,6 +86,12 @@ export interface SummaryDTO {
   largestLoss: number | null;
   maxDrawdown: number;
   streak: Summary["streak"];
+  rTradeCount: number;
+  netR: number;
+  expectancyR: number | null;
+  avgWinR: number | null;
+  avgLossR: number | null;
+  maxDrawdownR: number;
 }
 
 export interface BreakdownDTO {
@@ -92,6 +101,8 @@ export interface BreakdownDTO {
   losses: number;
   netPnl: number;
   winRate: number;
+  netR: number;
+  rTradeCount: number;
 }
 
 export interface EquityPointDTO {
@@ -100,12 +111,61 @@ export interface EquityPointDTO {
   symbol: string;
   pnl: number;
   cumulative: number;
+  r: number | null;
+  cumulativeR: number;
 }
 
 export interface DailyPointDTO {
   date: string;
   pnl: number;
+  r: number;
   tradeCount: number;
+}
+
+export interface EdgeScoreDTO {
+  score: number | null;
+  factors: { key: string; label: string; raw: number | null; score: number }[];
+  sampleSize: number;
+  window: number;
+  minimum: number;
+  insufficient: boolean;
+  trend: { index: number; t: number; score: number }[];
+}
+
+export interface CurvePointDTO {
+  t: number;
+  tradeId: string;
+  symbol: string;
+  actual: number;
+  mistakesRemoved: number;
+  stopsHonoured: number;
+  actualR: number;
+  mistakesRemovedR: number;
+  stopsHonouredR: number;
+  removed: boolean;
+  capped: boolean;
+}
+
+export interface CurvesDTO {
+  points: CurvePointDTO[];
+  actual: number;
+  mistakesRemoved: number;
+  stopsHonoured: number;
+  actualR: number;
+  mistakesRemovedR: number;
+  stopsHonouredR: number;
+  removedCount: number;
+  cappedCount: number;
+}
+
+export interface MistakeCostDTO {
+  tagId: string;
+  name: string;
+  count: number;
+  netPnl: number;
+  avgPnl: number | null;
+  netR: number;
+  rCount: number;
 }
 
 export interface CalendarDTO {
@@ -127,6 +187,9 @@ export interface DashboardData {
   topSymbols: BreakdownDTO[];
   byTag: BreakdownDTO[];
   recent: TradeDTO[];
+  edge: EdgeScoreDTO;
+  curves: CurvesDTO;
+  mistakes: MistakeCostDTO[];
 }
 
 function serializeSummary(s: Summary): SummaryDTO {
@@ -148,11 +211,26 @@ function serializeSummary(s: Summary): SummaryDTO {
     largestLoss: toNumber(s.largestLoss),
     maxDrawdown: s.maxDrawdown.toNumber(),
     streak: s.streak,
+    rTradeCount: s.rTradeCount,
+    netR: s.netR.toNumber(),
+    expectancyR: toNumber(s.expectancyR),
+    avgWinR: toNumber(s.avgWinR),
+    avgLossR: toNumber(s.avgLossR),
+    maxDrawdownR: s.maxDrawdownR.toNumber(),
   };
 }
 
 function serializeBreakdown(b: Breakdown): BreakdownDTO {
-  return { key: b.key, tradeCount: b.tradeCount, wins: b.wins, losses: b.losses, netPnl: b.netPnl.toNumber(), winRate: b.winRate.toNumber() };
+  return {
+    key: b.key,
+    tradeCount: b.tradeCount,
+    wins: b.wins,
+    losses: b.losses,
+    netPnl: b.netPnl.toNumber(),
+    winRate: b.winRate.toNumber(),
+    netR: b.netR.toNumber(),
+    rTradeCount: b.rTradeCount,
+  };
 }
 
 function shiftMonth(month: string, delta: number): string {
@@ -172,10 +250,20 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
   const monthStart = startOfDayInZone(`${month}-01`, timeZone);
   const monthEnd = startOfDayInZone(`${shiftMonth(month, 1)}-01`, timeZone);
 
-  const [closed, openCount, monthTrades, recent, defaultAccount] = await Promise.all([
+  const [closed, openCount, monthTrades, recent, defaultAccount, history] = await Promise.all([
     db.trade.findMany({
       where: { userId, status: "CLOSED", ...(exitFilter ? { exitAt: exitFilter } : {}) },
-      select: { id: true, symbol: true, status: true, pnl: true, entryAt: true, exitAt: true, tags: { select: { name: true } } },
+      select: {
+        id: true,
+        symbol: true,
+        status: true,
+        pnl: true,
+        rMultiple: true,
+        plannedRisk: true,
+        entryAt: true,
+        exitAt: true,
+        tags: { select: { id: true, name: true, kind: true } },
+      },
       orderBy: { exitAt: "asc" },
     }),
     db.trade.count({ where: { userId, status: "OPEN" } }),
@@ -190,6 +278,11 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
       include: { account: { select: { id: true, name: true, currency: true } }, tags: { orderBy: { name: "asc" } } },
     }),
     db.account.findFirst({ where: { userId }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }], select: { currency: true } }),
+    db.trade.findMany({
+      where: { userId, status: "CLOSED", exitAt: { not: null } },
+      select: { id: true, exitAt: true, pnl: true },
+      orderBy: { exitAt: "asc" },
+    }),
   ]);
 
   const statsTrades: StatsTrade[] = closed.map((t) => ({
@@ -197,10 +290,29 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
     symbol: t.symbol,
     status: t.status,
     pnl: t.pnl,
+    rMultiple: t.rMultiple,
     entryAt: t.entryAt,
     exitAt: t.exitAt,
     tags: t.tags.map((tag) => tag.name),
   }));
+  const scoreTrades = history.filter((t) => t.exitAt && t.pnl !== null).map((t) => ({ id: t.id, exitAt: t.exitAt as Date, pnl: toPlainString(t.pnl) as string }));
+  const edge = edgeScore(scoreTrades, { timeZone });
+  const trend = edgeScoreTrend(scoreTrades, { timeZone });
+  const curves = threeCurves(
+    closed.map((t) => ({
+      id: t.id,
+      symbol: t.symbol,
+      status: t.status,
+      exitAt: t.exitAt,
+      pnl: toPlainString(t.pnl),
+      rMultiple: toPlainString(t.rMultiple),
+      plannedRisk: toPlainString(t.plannedRisk),
+      hasMistake: t.tags.some((tag) => tag.kind === "MISTAKE"),
+    })),
+  );
+  const mistakes = mistakeCosts(
+    closed.map((t) => ({ id: t.id, status: t.status, pnl: toPlainString(t.pnl), rMultiple: toPlainString(t.rMultiple), tags: t.tags })),
+  );
   const summary = summarize(statsTrades);
   summary.openCount = openCount;
   const symbols = new Map(closed.map((t) => [t.id, t.symbol]));
@@ -208,7 +320,7 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
   const monthDays = dailyPnl(
     monthTrades.map((t) => ({ id: t.id, symbol: t.symbol, status: t.status, pnl: t.pnl, entryAt: t.entryAt, exitAt: t.exitAt })),
     { timeZone },
-  ).map((d) => ({ date: d.date, pnl: d.pnl.toNumber(), tradeCount: d.tradeCount }));
+  ).map((d) => ({ date: d.date, pnl: d.pnl.toNumber(), r: d.r.toNumber(), tradeCount: d.tradeCount }));
 
   return {
     range,
@@ -220,8 +332,10 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
       symbol: symbols.get(p.tradeId) ?? "",
       pnl: p.pnl.toNumber(),
       cumulative: p.cumulative.toNumber(),
+      r: toNumber(p.r),
+      cumulativeR: p.cumulativeR.toNumber(),
     })),
-    daily: dailyPnl(statsTrades, { timeZone }).map((d) => ({ date: d.date, pnl: d.pnl.toNumber(), tradeCount: d.tradeCount })),
+    daily: dailyPnl(statsTrades, { timeZone }).map((d) => ({ date: d.date, pnl: d.pnl.toNumber(), r: d.r.toNumber(), tradeCount: d.tradeCount })),
     calendar: {
       month,
       prevMonth: shiftMonth(month, -1),
@@ -233,5 +347,46 @@ export async function loadDashboard(userId: string, timeZone: string, range: Res
     topSymbols: breakdownBySymbol(statsTrades).slice(0, 8).map(serializeBreakdown),
     byTag: breakdownByTag(statsTrades).map(serializeBreakdown),
     recent: recent.map(serializeTrade),
+    edge: {
+      score: edge.score,
+      factors: edge.factors,
+      sampleSize: edge.sampleSize,
+      window: edge.window,
+      minimum: edge.minimum,
+      insufficient: edge.insufficient,
+      trend,
+    },
+    curves: {
+      points: curves.points.map((p) => ({
+        t: p.t,
+        tradeId: p.tradeId,
+        symbol: p.symbol,
+        actual: p.actual.toNumber(),
+        mistakesRemoved: p.mistakesRemoved.toNumber(),
+        stopsHonoured: p.stopsHonoured.toNumber(),
+        actualR: p.actualR.toNumber(),
+        mistakesRemovedR: p.mistakesRemovedR.toNumber(),
+        stopsHonouredR: p.stopsHonouredR.toNumber(),
+        removed: p.removed,
+        capped: p.capped,
+      })),
+      actual: curves.actual.toNumber(),
+      mistakesRemoved: curves.mistakesRemoved.toNumber(),
+      stopsHonoured: curves.stopsHonoured.toNumber(),
+      actualR: curves.actualR.toNumber(),
+      mistakesRemovedR: curves.mistakesRemovedR.toNumber(),
+      stopsHonouredR: curves.stopsHonouredR.toNumber(),
+      removedCount: curves.removedCount,
+      cappedCount: curves.cappedCount,
+    },
+    mistakes: mistakes.map((m) => ({
+      tagId: m.tagId,
+      name: m.name,
+      count: m.count,
+      netPnl: m.netPnl.toNumber(),
+      avgPnl: toNumber(m.avgPnl),
+      netR: m.netR.toNumber(),
+      rCount: m.rCount,
+    })),
   };
 }

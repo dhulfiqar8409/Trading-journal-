@@ -9,12 +9,15 @@ export interface StatsTrade {
   entryAt: Date;
   exitAt: Date | null;
   tags?: string[];
+  /** Realised R-multiple; null for trades without a stop (excluded from R statistics). */
+  rMultiple?: DecimalInput | null;
 }
 
 export interface ClosedTrade {
   id: string;
   symbol: string;
   pnl: Decimal;
+  rMultiple: Decimal | null;
   entryAt: Date;
   exitAt: Date;
   tags: string[];
@@ -49,6 +52,13 @@ export interface Summary {
   /** Largest peak-to-trough decline of cumulative P&L (zero or positive). */
   maxDrawdown: Decimal;
   streak: Streak;
+  /** R-based figures over the closed trades that have a stop. */
+  rTradeCount: number;
+  netR: Decimal;
+  expectancyR: Decimal | null;
+  avgWinR: Decimal | null;
+  avgLossR: Decimal | null;
+  maxDrawdownR: Decimal;
 }
 
 export interface Breakdown {
@@ -58,12 +68,15 @@ export interface Breakdown {
   losses: number;
   netPnl: Decimal;
   winRate: Decimal;
+  netR: Decimal;
+  rTradeCount: number;
 }
 
 export interface DailyPoint {
   /** "YYYY-MM-DD" in the requested zone. */
   date: string;
   pnl: Decimal;
+  r: Decimal;
   tradeCount: number;
 }
 
@@ -72,6 +85,8 @@ export interface EquityPoint {
   exitAt: Date;
   pnl: Decimal;
   cumulative: Decimal;
+  r: Decimal | null;
+  cumulativeR: Decimal;
 }
 
 /** Closed trades with a P&L, in chronological exit order. Open trades are excluded from every statistic. */
@@ -79,7 +94,15 @@ export function closedTrades(trades: StatsTrade[]): ClosedTrade[] {
   const closed: ClosedTrade[] = [];
   for (const t of trades) {
     if (t.status !== "CLOSED" || t.pnl === null || t.pnl === undefined || !t.exitAt) continue;
-    closed.push({ id: t.id, symbol: t.symbol, pnl: toDecimal(t.pnl), entryAt: t.entryAt, exitAt: t.exitAt, tags: t.tags ?? [] });
+    closed.push({
+      id: t.id,
+      symbol: t.symbol,
+      pnl: toDecimal(t.pnl),
+      rMultiple: t.rMultiple === null || t.rMultiple === undefined ? null : toDecimal(t.rMultiple),
+      entryAt: t.entryAt,
+      exitAt: t.exitAt,
+      tags: t.tags ?? [],
+    });
   }
   closed.sort((a, b) => a.exitAt.getTime() - b.exitAt.getTime() || a.id.localeCompare(b.id));
   return closed;
@@ -140,6 +163,27 @@ export function summarize(trades: StatsTrade[]): Summary {
     }
   }
 
+  let rTradeCount = 0;
+  let rWins = 0;
+  let rLosses = 0;
+  let netR = ZERO;
+  let grossWinR = ZERO;
+  let grossLossR = ZERO;
+  const rSeries: Decimal[] = [];
+  for (const t of closed) {
+    if (!t.rMultiple) continue;
+    rTradeCount++;
+    netR = netR.plus(t.rMultiple);
+    rSeries.push(t.rMultiple);
+    if (t.rMultiple.greaterThan(0)) {
+      rWins++;
+      grossWinR = grossWinR.plus(t.rMultiple);
+    } else if (t.rMultiple.lessThan(0)) {
+      rLosses++;
+      grossLossR = grossLossR.plus(t.rMultiple);
+    }
+  }
+
   const tradeCount = closed.length;
   const netPnl = grossProfit.plus(grossLoss);
   return {
@@ -160,6 +204,12 @@ export function summarize(trades: StatsTrade[]): Summary {
     largestLoss,
     maxDrawdown: maxDrawdown(closed.map((t) => t.pnl)),
     streak: currentStreak(closed),
+    rTradeCount,
+    netR,
+    expectancyR: rTradeCount ? netR.div(rTradeCount) : null,
+    avgWinR: rWins ? grossWinR.div(rWins) : null,
+    avgLossR: rLosses ? grossLossR.div(rLosses) : null,
+    maxDrawdownR: maxDrawdown(rSeries),
   };
 }
 
@@ -169,7 +219,9 @@ function buildBreakdown(groups: Map<string, ClosedTrade[]>): Breakdown[] {
     const wins = list.filter((t) => t.pnl.greaterThan(0)).length;
     const losses = list.filter((t) => t.pnl.lessThan(0)).length;
     const netPnl = list.reduce((acc, t) => acc.plus(t.pnl), ZERO);
-    rows.push({ key, tradeCount: list.length, wins, losses, netPnl, winRate: new Decimal(wins).div(list.length) });
+    const withR = list.filter((t) => t.rMultiple);
+    const netR = withR.reduce((acc, t) => acc.plus(t.rMultiple as Decimal), ZERO);
+    rows.push({ key, tradeCount: list.length, wins, losses, netPnl, winRate: new Decimal(wins).div(list.length), netR, rTradeCount: withR.length });
   }
   rows.sort((a, b) => b.netPnl.comparedTo(a.netPnl) || a.key.localeCompare(b.key));
   return rows;
@@ -204,8 +256,9 @@ export function dailyPnl(trades: StatsTrade[], options: { timeZone?: string } = 
   const days = new Map<string, DailyPoint>();
   for (const t of closedTrades(trades)) {
     const key = dateKeyInZone(t.exitAt, timeZone);
-    const day = days.get(key) ?? { date: key, pnl: ZERO, tradeCount: 0 };
+    const day = days.get(key) ?? { date: key, pnl: ZERO, r: ZERO, tradeCount: 0 };
     day.pnl = day.pnl.plus(t.pnl);
+    if (t.rMultiple) day.r = day.r.plus(t.rMultiple);
     day.tradeCount++;
     days.set(key, day);
   }
@@ -215,8 +268,10 @@ export function dailyPnl(trades: StatsTrade[], options: { timeZone?: string } = 
 /** Cumulative net P&L after each closed trade, in exit order. */
 export function equityCurve(trades: StatsTrade[]): EquityPoint[] {
   let cumulative = ZERO;
+  let cumulativeR = ZERO;
   return closedTrades(trades).map((t) => {
     cumulative = cumulative.plus(t.pnl);
-    return { tradeId: t.id, exitAt: t.exitAt, pnl: t.pnl, cumulative };
+    if (t.rMultiple) cumulativeR = cumulativeR.plus(t.rMultiple);
+    return { tradeId: t.id, exitAt: t.exitAt, pnl: t.pnl, cumulative, r: t.rMultiple, cumulativeR };
   });
 }

@@ -4,20 +4,27 @@ import { Area, AreaChart, CartesianGrid, ReferenceDot, ReferenceLine, Responsive
 import { chartTheme, compactMoney, shortDateInZone } from "@/components/charts/chart-theme";
 import { TooltipFrame, toneOf } from "@/components/charts/tooltip";
 import type { EquityPointDTO } from "@/lib/queries/dashboard";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, formatR } from "@/lib/format";
 
 interface Props {
   points: EquityPointDTO[];
   currency: string;
   timeZone: string;
+  mode?: "R" | "USD";
 }
 
-export function EquityCurve({ points, currency, timeZone }: Props) {
+export function EquityCurve({ points, currency, timeZone, mode = "USD" }: Props) {
   if (points.length === 0) {
     return <p className="flex h-56 items-center justify-center text-sm text-muted">No closed trades in this range.</p>;
   }
+  const inR = mode === "R";
+  const key = inR ? "cumulativeR" : "cumulative";
+  const fmt = (v: number) => (inR ? formatR(v) : formatMoney(v, { currency, signed: true }));
   const last = points[points.length - 1];
-  const data = points.length === 1 ? [{ ...points[0], t: points[0].t - 1, cumulative: 0, pnl: 0, symbol: "", tradeId: "start" }, ...points] : points;
+  const data =
+    points.length === 1
+      ? [{ ...points[0], t: points[0].t - 1, cumulative: 0, cumulativeR: 0, pnl: 0, r: 0, symbol: "", tradeId: "start" }, ...points]
+      : points;
 
   return (
     <div className="h-64 w-full min-w-0 overflow-hidden sm:h-72">
@@ -42,11 +49,11 @@ export function EquityCurve({ points, currency, timeZone }: Props) {
             minTickGap={40}
           />
           <YAxis
-            tickFormatter={(v: number) => compactMoney(v, currency)}
+            tickFormatter={(v: number) => (inR ? `${v}R` : compactMoney(v, currency))}
             tick={chartTheme.tick}
             axisLine={false}
             tickLine={false}
-            width={64}
+            width={inR ? 44 : 64}
           />
           <ReferenceLine y={0} stroke={chartTheme.axis} strokeWidth={1} />
           <Tooltip
@@ -58,17 +65,25 @@ export function EquityCurve({ points, currency, timeZone }: Props) {
               return (
                 <TooltipFrame
                   title={`${shortDateInZone(p.t, timeZone)} · ${p.symbol}`}
-                  rows={[
-                    { label: "Cumulative", value: formatMoney(p.cumulative, { currency, signed: true }), tone: toneOf(p.cumulative) },
-                    { label: "Trade", value: formatMoney(p.pnl, { currency, signed: true }), tone: toneOf(p.pnl) },
-                  ]}
+                  rows={
+                    inR
+                      ? [
+                          { label: "Cumulative", value: formatR(p.cumulativeR), tone: toneOf(p.cumulativeR) },
+                          { label: "Trade", value: p.r === null ? "no stop" : formatR(p.r), tone: p.r === null ? null : toneOf(p.r) },
+                          { label: "In currency", value: formatMoney(p.cumulative, { currency, signed: true }), tone: toneOf(p.cumulative) },
+                        ]
+                      : [
+                          { label: "Cumulative", value: formatMoney(p.cumulative, { currency, signed: true }), tone: toneOf(p.cumulative) },
+                          { label: "Trade", value: formatMoney(p.pnl, { currency, signed: true }), tone: toneOf(p.pnl) },
+                        ]
+                  }
                 />
               );
             }}
           />
           <Area
             type="monotone"
-            dataKey="cumulative"
+            dataKey={key}
             stroke={chartTheme.accent}
             strokeWidth={2}
             fill="url(#equityWash)"
@@ -78,13 +93,13 @@ export function EquityCurve({ points, currency, timeZone }: Props) {
           />
           <ReferenceDot
             x={last.t}
-            y={last.cumulative}
+            y={inR ? last.cumulativeR : last.cumulative}
             r={4}
             fill={chartTheme.accent}
             stroke={chartTheme.surface}
             strokeWidth={2}
             label={{
-              value: formatMoney(last.cumulative, { currency, signed: true }),
+              value: fmt(inR ? last.cumulativeR : last.cumulative),
               position: "left",
               offset: 10,
               fill: "var(--color-ink)",

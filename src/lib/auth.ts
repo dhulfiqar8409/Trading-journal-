@@ -10,6 +10,7 @@ export interface CurrentUser {
   email: string;
   name: string;
   timeZone: string;
+  displayMode: "R" | "USD";
   createdAt: Date;
 }
 
@@ -20,7 +21,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   if (!session) return null;
   return db.user.findUnique({
     where: { id: session.userId },
-    select: { id: true, email: true, name: true, timeZone: true, createdAt: true },
+    select: { id: true, email: true, name: true, timeZone: true, displayMode: true, createdAt: true },
   });
 });
 

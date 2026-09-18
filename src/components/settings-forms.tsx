@@ -4,7 +4,7 @@ import { changePasswordAction, updateProfileAction } from "@/actions/auth";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
 import { TimeZoneSelect } from "@/components/timezone-select";
 
-export function ProfileForm({ name, timeZone }: { name: string; timeZone: string }) {
+export function ProfileForm({ name, timeZone, displayMode }: { name: string; timeZone: string; displayMode: "R" | "USD" }) {
   const { state, onSubmit, pending } = useActionForm(updateProfileAction);
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-3">
@@ -22,6 +22,16 @@ export function ProfileForm({ name, timeZone }: { name: string; timeZone: string
         <TimeZoneSelect id="p-tz" name="timeZone" defaultValue={timeZone} />
         <p className="hint">Trade times, daily P&L and the calendar use this zone.</p>
         <FieldError state={state} name="timeZone" />
+      </div>
+      <div>
+        <label htmlFor="p-mode" className="label">
+          Show results in
+        </label>
+        <select id="p-mode" name="displayMode" defaultValue={displayMode} className="input">
+          <option value="R">R-multiples first (dollars one tap away)</option>
+          <option value="USD">Currency first (R one tap away)</option>
+        </select>
+        <p className="hint">R needs a stop on the trade; trades without one show “no stop” and stay out of R statistics.</p>
       </div>
       <FormMessage state={state} />
       <div>

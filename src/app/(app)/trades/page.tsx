@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Pagination } from "@/components/pagination";
-import { Pnl, RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
+import { PnlFigure } from "@/components/figure";
+import { RMultiple, SideBadge, StatusBadge } from "@/components/pnl";
 import { TagChip } from "@/components/tag-chip";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -172,7 +173,7 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
                     <td className="num text-right">{formatPrice(t.entryPrice)}</td>
                     <td className="num text-right">{formatPrice(t.exitPrice)}</td>
                     <td className="text-right">
-                      <Pnl value={t.pnl} currency={t.currency} />
+                      <PnlFigure pnl={t.pnl} r={t.rMultiple} currency={t.currency} mode={user.displayMode} />
                     </td>
                     <td className="text-right">
                       <RMultiple value={t.rMultiple} />
@@ -203,7 +204,7 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
                       <SideBadge side={t.side} />
                       {t.status === "OPEN" ? <StatusBadge status={t.status} /> : null}
                     </div>
-                    <Pnl value={t.pnl} currency={t.currency} className="font-semibold" />
+                    <PnlFigure pnl={t.pnl} r={t.rMultiple} currency={t.currency} mode={user.displayMode} className="font-semibold" />
                   </div>
                   <div className="mt-1 flex items-center justify-between text-xs text-muted">
                     <span className="num">

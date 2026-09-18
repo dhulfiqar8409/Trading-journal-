@@ -64,9 +64,12 @@ export const changePasswordSchema = z
   })
   .refine((d) => d.newPassword === d.confirmPassword, { message: "Passwords do not match", path: ["confirmPassword"] });
 
+export const DISPLAY_MODES = ["R", "USD"] as const;
+
 export const profileSchema = z.object({
   name: z.string().trim().min(1, "Enter your name").max(100),
   timeZone: timeZoneSchema,
+  displayMode: z.preprocess(emptyToUndefined, z.enum(DISPLAY_MODES).default("R")),
 });
 
 export const accountSchema = z.object({

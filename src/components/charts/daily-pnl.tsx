@@ -4,11 +4,12 @@ import { Bar, BarChart, CartesianGrid, Rectangle, ReferenceLine, ResponsiveConta
 import { chartTheme, compactMoney, shortDateKey } from "@/components/charts/chart-theme";
 import { TooltipFrame, toneOf } from "@/components/charts/tooltip";
 import type { DailyPointDTO } from "@/lib/queries/dashboard";
-import { formatDateKey, formatMoney } from "@/lib/format";
+import { formatDateKey, formatMoney, formatR } from "@/lib/format";
 
 interface Props {
   days: DailyPointDTO[];
   currency: string;
+  mode?: "R" | "USD";
 }
 
 interface BarShapeProps {
@@ -36,10 +37,11 @@ function SignedBar({ x = 0, y = 0, width = 0, height = 0, value = 0, dim = false
   );
 }
 
-export function DailyPnlBars({ days, currency }: Props) {
+export function DailyPnlBars({ days, currency, mode = "USD" }: Props) {
   if (days.length === 0) {
     return <p className="flex h-56 items-center justify-center text-sm text-muted">No closed trades in this range.</p>;
   }
+  const inR = mode === "R";
   return (
     <div className="h-56 w-full min-w-0 overflow-hidden sm:h-64">
       <ResponsiveContainer width="100%" height="100%">
@@ -55,11 +57,11 @@ export function DailyPnlBars({ days, currency }: Props) {
             interval="preserveStartEnd"
           />
           <YAxis
-            tickFormatter={(v: number) => compactMoney(v, currency)}
+            tickFormatter={(v: number) => (inR ? `${v}R` : compactMoney(v, currency))}
             tick={chartTheme.tick}
             axisLine={false}
             tickLine={false}
-            width={64}
+            width={inR ? 44 : 64}
           />
           <ReferenceLine y={0} stroke={chartTheme.axis} strokeWidth={1} />
           <Tooltip
@@ -72,6 +74,7 @@ export function DailyPnlBars({ days, currency }: Props) {
                 <TooltipFrame
                   title={formatDateKey(p.date)}
                   rows={[
+                    { label: "Net R", value: formatR(p.r), tone: toneOf(p.r) },
                     { label: "Net P&L", value: formatMoney(p.pnl, { currency, signed: true }), tone: toneOf(p.pnl) },
                     { label: "Trades", value: String(p.tradeCount) },
                   ]}
@@ -80,7 +83,7 @@ export function DailyPnlBars({ days, currency }: Props) {
             }}
           />
           <Bar
-            dataKey="pnl"
+            dataKey={inR ? "r" : "pnl"}
             maxBarSize={24}
             shape={(props: BarShapeProps) => <SignedBar {...props} />}
             activeBar={(props: BarShapeProps) => <SignedBar {...props} dim />}

@@ -22,6 +22,7 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const tradeDateObj = new Date(Date.UTC(2024, 0, 1 + (Math.floor(Date.now() / 1000) % 730)));
 const tradeDate = tradeDateObj.toISOString().slice(0, 10);
 const tradeMonthLabel = `${MONTHS[tradeDateObj.getUTCMonth()]} ${tradeDateObj.getUTCFullYear()}`;
+const tradeDayLabel = `${MONTHS[tradeDateObj.getUTCMonth()].slice(0, 3)} ${tradeDateObj.getUTCDate()}, ${tradeDateObj.getUTCFullYear()}`;
 
 let page: Page;
 
@@ -37,6 +38,11 @@ test.afterAll(async () => {
 
 async function shot(name: string) {
   await page.screenshot({ path: path.join(shotsDir, `${name}.png`), fullPage: true });
+}
+
+/** A P&L figure button; its accessible name carries both units, e.g. "+2.49R, +$248.80". */
+function figure(text: string) {
+  return page.getByRole("button", { name: new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) });
 }
 
 test("first run: create the owner account, or sign in when it exists", async () => {
@@ -76,7 +82,10 @@ test("create a trade through the UI", async () => {
   await page.getByRole("button", { name: "Save trade" }).click();
   await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
   await expect(page.getByRole("heading", { name: manualSymbol })).toBeVisible();
-  await expect(page.getByText("+$248.80").first()).toBeVisible();
+  const hero = figure("+2.49R, +$248.80").first();
+  await expect(hero).toBeVisible(); // R first…
+  await hero.click();
+  await expect(figure("+$248.80, +2.49R").first()).toHaveText("+$248.80"); // …dollars one tap away
   await expect(page.getByText("+2.49R", { exact: true })).toBeVisible();
   await expect(page.locator("strong", { hasText: "strong" })).toBeVisible(); // markdown rendered
   await shot("04-trade-detail");
@@ -86,7 +95,7 @@ test("the trade shows in the list and its detail page opens", async () => {
   await page.goto(`/trades?symbol=${manualSymbol}`);
   const link = page.getByRole("link", { name: manualSymbol, exact: true }).first();
   await expect(link).toBeVisible();
-  await expect(page.getByText("+$248.80").first()).toBeVisible();
+  await expect(figure("+2.49R, +$248.80").first()).toBeVisible();
   await shot("05-trades-list");
   await link.click();
   await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
@@ -96,16 +105,18 @@ test("the trade shows in the list and its detail page opens", async () => {
 test("dashboard shows the P&L and renders charts", async () => {
   await page.goto(`/?range=custom&from=${tradeDate}&to=${tradeDate}`);
   const hero = page.locator("section[aria-label='Net P&L']");
-  await expect(hero).toContainText("+$248.80");
+  await expect(hero.getByRole("button", { name: /\+2\.49R, \+\$248\.80/ })).toBeVisible();
   await expect(hero).toContainText("1 closed trade");
+  await expect(page.locator("section[aria-label='Edge Score']")).toBeVisible();
+  await expect(page.locator("section[aria-label='What mistakes cost']")).toContainText("Stops honoured");
+  await expect(page.locator("section[aria-label='What mistakes cost'] .recharts-line-curve")).toHaveCount(3);
   await expect(page.locator("section[aria-label='Key figures']")).toContainText("100%");
-  await expect(page.locator(".recharts-surface")).toHaveCount(2);
   await expect(page.locator(".recharts-area-curve")).toHaveCount(1);
   await expect(page.locator(".recharts-bar-rectangle")).toHaveCount(1);
   await expect(page.getByRole("grid", { name: new RegExp(`Daily P&L for ${tradeMonthLabel}`) })).toBeVisible();
-  await expect(page.getByRole("gridcell", { name: /\+\$248\.80 over 1 trade/ })).toBeVisible();
+  await expect(page.getByRole("gridcell", { name: `${tradeDayLabel}: +$248.80 over 1 trade` })).toBeVisible();
   const symbolRow = page.getByRole("row", { name: new RegExp(manualSymbol) }); // top symbols table
-  await expect(symbolRow).toContainText("+$248.80");
+  await expect(symbolRow).toContainText("+2.49R");
   await shot("06-dashboard");
 });
 
@@ -144,8 +155,8 @@ test("import a small CSV with a duplicate row", async () => {
 
   await page.goto(`/trades?symbol=${csvSymbol}`);
   await expect(page.getByText("1–2 of 2")).toBeVisible();
-  await expect(page.getByText("+$19.50").first()).toBeVisible();
-  await expect(page.getByText("-$5.50").first()).toBeVisible();
+  await expect(figure("no stop, +$19.50").first()).toBeVisible();
+  await expect(figure("no stop, -$5.50").first()).toBeVisible();
 });
 
 test("phone-width layout has no horizontal scroll", async () => {

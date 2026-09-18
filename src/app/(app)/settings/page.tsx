@@ -17,7 +17,7 @@ export default async function SettingsPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="card card-pad">
           <h2 className="mb-3 text-sm font-semibold">Profile</h2>
-          <ProfileForm name={user.name} timeZone={user.timeZone} />
+          <ProfileForm name={user.name} timeZone={user.timeZone} displayMode={user.displayMode} />
         </section>
         <section className="card card-pad">
           <h2 className="mb-3 text-sm font-semibold">Password</h2>
