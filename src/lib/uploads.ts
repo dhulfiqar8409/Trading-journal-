@@ -16,7 +16,9 @@ const STORED_NAME_RE = /^[a-f0-9]{32}\.(png|jpg|gif|webp)$/;
 const USER_ID_RE = /^[a-z0-9]+$/i;
 
 export function uploadRoot(): string {
-  return path.resolve(process.cwd(), process.env.UPLOAD_DIR || "./uploads");
+  // The directory is configured at runtime; the ignore comment stops the build
+  // tracer from copying the whole project into the standalone output.
+  return path.resolve(/* turbopackIgnore: true */ process.cwd(), process.env.UPLOAD_DIR || "./uploads");
 }
 
 /** Detect the real image type from magic bytes; the client-supplied MIME type is never trusted. */
@@ -38,7 +40,7 @@ export function uploadPath(userId: string, storedName: string): string {
   if (!USER_ID_RE.test(userId) || !STORED_NAME_RE.test(storedName)) {
     throw new Error("Invalid upload reference");
   }
-  return path.join(uploadRoot(), userId, storedName);
+  return path.join(/* turbopackIgnore: true */ uploadRoot(), userId, storedName);
 }
 
 export async function saveUpload(userId: string, bytes: Uint8Array, mimeType: string): Promise<string> {

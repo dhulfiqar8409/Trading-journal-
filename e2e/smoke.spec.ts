@@ -16,6 +16,12 @@ const shotsDir = process.env.E2E_SHOTS_DIR ?? path.join("test-results", "screens
 const stamp = Date.now().toString(36).toUpperCase();
 const manualSymbol = `E2E${stamp}`;
 const csvSymbol = `CSV${stamp}`;
+// Each run gets its own day (seconds mapped onto 2024-2025) so single-day dashboard figures only
+// contain this run's trade; the cleanup step at the end removes the run's trades again.
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const tradeDateObj = new Date(Date.UTC(2024, 0, 1 + (Math.floor(Date.now() / 1000) % 730)));
+const tradeDate = tradeDateObj.toISOString().slice(0, 10);
+const tradeMonthLabel = `${MONTHS[tradeDateObj.getUTCMonth()]} ${tradeDateObj.getUTCFullYear()}`;
 
 let page: Page;
 
@@ -61,8 +67,8 @@ test("create a trade through the UI", async () => {
   await page.fill("#exitPrice", "152.5");
   await page.fill("#fees", "1.2");
   await page.fill("#stopPrice", "149");
-  await page.fill("#entryAt", "2025-09-10T09:31");
-  await page.fill("#exitAt", "2025-09-10T10:05");
+  await page.fill("#entryAt", `${tradeDate}T09:31`);
+  await page.fill("#exitAt", `${tradeDate}T10:05`);
   await page.fill("#notes", "Gap and go on **strong** volume.\n\n- entry at VWAP reclaim\n- exit into resistance");
   await expect(page.getByText("+$248.80")).toBeVisible(); // live preview
   await shot("03-new-trade");
@@ -87,17 +93,16 @@ test("the trade shows in the list and its detail page opens", async () => {
 });
 
 test("dashboard shows the P&L and renders charts", async () => {
-  await page.goto("/?range=custom&from=2025-09-10&to=2025-09-10");
-  await expect(page.getByText("Net P&L").first()).toBeVisible();
-  // Other runs may have added trades on the same day, so assert on this trade's own row.
+  await page.goto(`/?range=custom&from=${tradeDate}&to=${tradeDate}`);
   const hero = page.locator("section[aria-label='Net P&L']");
-  await expect(hero).toContainText(/closed trade/);
-  await expect(hero).toContainText(/\$[\d,]+\.\d{2}/);
-  await expect(page.locator("section[aria-label='Key figures']")).toContainText("Win rate");
+  await expect(hero).toContainText("+$248.80");
+  await expect(hero).toContainText("1 closed trade");
+  await expect(page.locator("section[aria-label='Key figures']")).toContainText("100%");
   await expect(page.locator(".recharts-surface")).toHaveCount(2);
   await expect(page.locator(".recharts-area-curve")).toHaveCount(1);
   await expect(page.locator(".recharts-bar-rectangle")).toHaveCount(1);
-  await expect(page.getByRole("grid", { name: /Daily P&L for September 2025/ })).toBeVisible();
+  await expect(page.getByRole("grid", { name: new RegExp(`Daily P&L for ${tradeMonthLabel}`) })).toBeVisible();
+  await expect(page.getByRole("gridcell", { name: /\+\$248\.80 over 1 trade/ })).toBeVisible();
   const symbolRow = page.getByRole("row", { name: new RegExp(manualSymbol) }); // top symbols table
   await expect(symbolRow).toContainText("+$248.80");
   await shot("06-dashboard");
@@ -167,6 +172,23 @@ test("phone-width layout has no horizontal scroll", async () => {
   expect(widths.scroll).toBeLessThanOrEqual(widths.client);
   await shot("11-mobile-trade-detail");
   await page.setViewportSize({ width: 1280, height: 900 });
+});
+
+test("delete this run's trades through the UI", async () => {
+  page.on("dialog", (dialog) => dialog.accept());
+  for (const symbol of [manualSymbol, csvSymbol]) {
+    for (let i = 0; i < 5; i++) {
+      await page.goto(`/trades?symbol=${symbol}`);
+      const link = page.locator("table a[href^='/trades/']").first();
+      if ((await link.count()) === 0) break;
+      await link.click();
+      await page.waitForURL(/\/trades\/[a-z0-9]+$/);
+      await page.getByRole("button", { name: "Delete trade" }).click();
+      await page.waitForURL((url) => url.pathname === "/trades");
+    }
+    await page.goto(`/trades?symbol=${symbol}`);
+    await expect(page.getByText("No trades match these filters.")).toBeVisible();
+  }
 });
 
 test("logging out blocks protected pages and APIs", async () => {
