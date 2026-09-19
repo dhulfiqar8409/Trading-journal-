@@ -1,31 +1,48 @@
 /**
  * Executions matched into round-trip trades. Brokers such as thinkorswim
  * export one row per fill (BUY +100 TO OPEN, SELL -100 TO CLOSE), not one per
- * trade. This module reads those rows and pairs them per contract, in time
- * order, into the trades the journal stores: opens build a position with a
- * quantity-weighted entry, closes take from it and become closed trades,
- * whatever is left stays open. Pure and browser-safe: the preview runs it in
- * the browser, the import route on the server.
+ * trade, and the Schwab website lists "Buy to Open" / "Sell to Close" rows
+ * next to dividends, transfers and expirations. This module reads those rows
+ * and pairs them per contract, in time order, into the trades the journal
+ * stores: opens build a position with a quantity-weighted entry, closes take
+ * from it and become closed trades, whatever is left stays open. Pure and
+ * browser-safe: the preview runs it in the browser, the import route on the
+ * server.
  */
 import { planClose } from "@/lib/close";
-import { guessMappingFor, parseAssetClass, parseNumber, parseOptionType, type AssetClass, type ImportOptions, type ParsedImportRow } from "@/lib/csv";
-import { parseFlexibleDate } from "@/lib/dates";
+import {
+  guessMappingFor,
+  nonTradeAction,
+  parseAction,
+  parseAssetClass,
+  parseNumber,
+  parseOptionType,
+  type ActionSide,
+  type AssetClass,
+  type ImportOptions,
+  type ParsedImportRow,
+  type PositionEffect,
+} from "@/lib/csv";
+import { hasTimeOfDay, parseFlexibleDate } from "@/lib/dates";
 import { Decimal, toDecimal, ZERO } from "@/lib/decimal";
 import { importHashKey } from "@/lib/import-hash-key";
-import { expirationInstant, OPTION_MULTIPLIER, parseOptionSymbol, tradeLabel, type OptionType } from "@/lib/options";
+import { expirationInstant, formatStrike, OPTION_MULTIPLIER, parseOptionSymbol, tradeLabel, type OptionType } from "@/lib/options";
 import { netPnl, type Side } from "@/lib/pnl";
+
+export type { PositionEffect };
+export type FillSide = ActionSide;
 
 export const EXECUTION_FIELDS = ["symbol", "side", "quantity", "posEffect", "price", "time", "fees", "expiresAt", "strikePrice", "optionType", "spread"] as const;
 export type ExecutionField = (typeof EXECUTION_FIELDS)[number];
 export type ExecutionMapping = Partial<Record<ExecutionField, string>>;
 
 export const EXECUTION_FIELD_INFO: Record<ExecutionField, { label: string; required: boolean; hint: string }> = {
-  symbol: { label: "Symbol", required: true, hint: "Underlying or contract, e.g. AAPL or SPY240920C00450000" },
-  side: { label: "Side", required: false, hint: "BUY or SELL (BTO, STC and friends work too); a signed quantity can stand in for it" },
+  symbol: { label: "Symbol", required: true, hint: "Underlying or contract, e.g. AAPL, SPY240920C00450000 or TSLA 09/25/2026 357.50 P" },
+  side: { label: "Side", required: false, hint: "BUY or SELL, or a phrase such as Sell to Close, BTO or Expired; a signed quantity can stand in for it" },
   quantity: { label: "Quantity", required: true, hint: "Shares or contracts of the fill; +100 buys and -100 sells when there is no side column" },
-  posEffect: { label: "Position effect", required: false, hint: "TO OPEN or TO CLOSE; inferred from the running position when absent" },
+  posEffect: { label: "Position effect", required: false, hint: "TO OPEN or TO CLOSE; read from the side phrase or the running position when absent" },
   price: { label: "Price", required: true, hint: "Fill price" },
-  time: { label: "Time", required: true, hint: "Execution date and time, e.g. 9/17/26 09:31:05" },
+  time: { label: "Time", required: true, hint: "Execution date and time, e.g. 9/17/26 09:31:05, or a date such as 09/17/2026" },
   fees: { label: "Fees", required: false, hint: "Commission and fees of the fill, summed into the trade" },
   expiresAt: { label: "Expiration", required: false, hint: "Options: expiration date, e.g. 20 SEP 26" },
   strikePrice: { label: "Strike", required: false, hint: "Options: strike price" },
@@ -35,12 +52,12 @@ export const EXECUTION_FIELD_INFO: Record<ExecutionField, { label: string; requi
 
 const EXECUTION_SYNONYMS: Record<ExecutionField, string[]> = {
   symbol: ["symbol", "ticker", "underlying", "instrument", "contract", "security", "sym", "product"],
-  side: ["side", "action", "buysell", "bs", "direction", "transaction", "orderside", "buyorsell"],
+  side: ["side", "action", "buysell", "bs", "direction", "transaction", "orderside", "buyorsell", "transactiontype"],
   quantity: ["qty", "quantity", "shares", "contracts", "size", "filledqty", "execqty", "units", "filled", "amount"],
   posEffect: ["poseffect", "positioneffect", "openclose", "effect", "opencloseindicator", "opcl", "positioneffectopenclose"],
   price: ["price", "execprice", "fillprice", "avgprice", "averageprice", "tradeprice", "executionprice", "fill"],
   time: ["exectime", "executiontime", "time", "datetime", "timestamp", "filltime", "date", "tradedate", "execdate", "executeddate", "transactiondate"],
-  fees: ["fees", "fee", "commission", "commissions", "commissionsandfees", "commfee", "totalfees", "charges"],
+  fees: ["fees", "fee", "commission", "commissions", "commissionsandfees", "feesandcomm", "feescomm", "feesandcommissions", "commfee", "totalfees", "charges"],
   expiresAt: ["exp", "expiration", "expirationdate", "expiry", "expdate", "expires", "expirydate"],
   strikePrice: ["strike", "strikeprice", "strk"],
   optionType: ["type", "putcall", "callput", "optiontype", "right", "cp", "instrumenttype", "assettype"],
@@ -51,8 +68,8 @@ export function guessExecutionMapping(headers: string[]): ExecutionMapping {
   return guessMappingFor(headers, EXECUTION_FIELDS, EXECUTION_SYNONYMS);
 }
 
-export type FillSide = "BUY" | "SELL";
-export type PositionEffect = "OPEN" | "CLOSE";
+/** A broker event that ends a contract without a fill of its own. */
+export type FillEvent = "EXPIRED" | "ASSIGNED" | "EXERCISED";
 
 export interface Fill {
   /** Row number in the file (the header is line 1). */
@@ -65,6 +82,8 @@ export interface Fill {
   posEffect: PositionEffect | null;
   price: string;
   time: Date;
+  /** False when the source gave a date with no clock time, as a Schwab transaction history does. */
+  timeOfDay: boolean;
   /** Zero or more. */
   fees: string;
   multiplier: string;
@@ -73,21 +92,15 @@ export interface Fill {
   expiresAt: Date | null;
   /** Multi-leg strategy name; null for single contracts and shares. */
   spread: string | null;
+  /** An expiration, assignment or exercise: it closes whichever side of the contract is open, at 0. */
+  event: FillEvent | null;
 }
 
-export type FillResult = { ok: true; fill: Fill } | { ok: false; error: string };
-
-/** BUY or SELL from a side cell; cells such as BTO or STC also say whether the fill opens or closes. */
-export function parseFillSide(raw: string): { side: FillSide; effect: PositionEffect | null } | null {
-  const v = raw.trim().toLowerCase().replace(/[^a-z]/g, "");
-  if (["buy", "b", "bot", "bought", "long", "purchase"].includes(v)) return { side: "BUY", effect: null };
-  if (["sell", "s", "sld", "sold", "short"].includes(v)) return { side: "SELL", effect: null };
-  if (["bto", "buytoopen"].includes(v)) return { side: "BUY", effect: "OPEN" };
-  if (["btc", "buytoclose", "buytocover", "cover"].includes(v)) return { side: "BUY", effect: "CLOSE" };
-  if (["sto", "selltoopen", "sellshort"].includes(v)) return { side: "SELL", effect: "OPEN" };
-  if (["stc", "selltoclose"].includes(v)) return { side: "SELL", effect: "CLOSE" };
-  return null;
-}
+export type FillResult =
+  | { ok: true; fill: Fill }
+  | { ok: false; skipped?: false; error: string }
+  /** A row that is not a fill (a dividend, a transfer, interest): left out with its action as the reason, not an error. */
+  | { ok: false; skipped: true; reason: string };
 
 /** OPEN or CLOSE from a position-effect cell; null when the cell is empty, undefined when it says something else. */
 export function parsePositionEffect(raw: string): PositionEffect | null | undefined {
@@ -96,6 +109,15 @@ export function parsePositionEffect(raw: string): PositionEffect | null | undefi
   if (["toopen", "open", "o", "opening", "bto", "sto", "openingtransaction"].includes(v)) return "OPEN";
   if (["toclose", "close", "c", "closing", "btc", "stc", "closingtransaction", "cover"].includes(v)) return "CLOSE";
   return undefined;
+}
+
+/** The contract event a side or action cell names: Expired, Assigned, Exchange or Exercise. Null for anything else. */
+export function parseFillEvent(raw: string): FillEvent | null {
+  const v = raw.trim().toLowerCase().replace(/[^a-z]/g, "");
+  if (["expired", "expire", "expiration", "expiry", "expiredworthless", "optionexpiration"].includes(v)) return "EXPIRED";
+  if (["assigned", "assignment", "optionassignment"].includes(v)) return "ASSIGNED";
+  if (["exchangeorexercise", "exerciseorexchange", "exercise", "exercised", "optionexercise"].includes(v)) return "EXERCISED";
+  return null;
 }
 
 function cell(record: Record<string, string>, mapping: ExecutionMapping, field: ExecutionField): string | null {
@@ -110,6 +132,27 @@ function cell(record: Record<string, string>, mapping: ExecutionMapping, field: 
 /** One execution row into a fill. `rowNumber` is the line in the file, for messages and notes. */
 export function parseFillRow(record: Record<string, string>, mapping: ExecutionMapping, options: ImportOptions = {}, rowNumber = 0): FillResult {
   const fail = (error: string): FillResult => ({ ok: false, error });
+
+  // The side comes first: a Schwab history lists dividends and transfers next
+  // to fills, with no symbol or quantity, and those rows are skipped, not errors.
+  let side: FillSide | null = null;
+  let effectFromSide: PositionEffect | null = null;
+  let event: FillEvent | null = null;
+  const sideRaw = cell(record, mapping, "side");
+  if (sideRaw) {
+    const action = parseAction(sideRaw);
+    if (action) {
+      side = action.side;
+      effectFromSide = action.effect;
+    } else {
+      event = parseFillEvent(sideRaw);
+      if (!event) {
+        const nonTrade = nonTradeAction(sideRaw);
+        if (nonTrade) return { ok: false, skipped: true, reason: nonTrade };
+        return fail(`unrecognised side "${sideRaw}"`);
+      }
+    }
+  }
 
   const symbolRaw = cell(record, mapping, "symbol");
   if (!symbolRaw) return fail("missing symbol");
@@ -162,31 +205,31 @@ export function parseFillRow(record: Record<string, string>, mapping: ExecutionM
   const signed = new Decimal(quantityParsed);
   if (signed.isZero()) return fail("quantity must not be zero");
 
-  let side: FillSide | null = null;
-  let effectFromSide: PositionEffect | null = null;
-  const sideRaw = cell(record, mapping, "side");
-  if (sideRaw) {
-    const parsed = parseFillSide(sideRaw);
-    if (!parsed) return fail(`unrecognised side "${sideRaw}"`);
-    side = parsed.side;
-    effectFromSide = parsed.effect;
-  } else if (signed.isNegative() || quantityRaw.trim().startsWith("+")) {
+  if (event) {
+    // Whichever side is open gets closed; the matcher settles the direction against the position.
+    side = "SELL";
+  } else if (!side && (signed.isNegative() || quantityRaw.trim().startsWith("+"))) {
     side = signed.isNegative() ? "SELL" : "BUY";
   }
   if (!side) return fail("missing side");
 
-  let posEffect: PositionEffect | null = effectFromSide;
-  const effectRaw = cell(record, mapping, "posEffect");
+  let posEffect: PositionEffect | null = event ? "CLOSE" : effectFromSide;
+  const effectRaw = event ? null : cell(record, mapping, "posEffect");
   if (effectRaw) {
     const parsed = parsePositionEffect(effectRaw);
     if (parsed === undefined) return fail(`unrecognised position effect "${effectRaw}"`);
     if (parsed) posEffect = parsed;
   }
 
-  const priceRaw = cell(record, mapping, "price");
-  if (!priceRaw) return fail("missing price");
-  const price = parseNumber(priceRaw);
-  if (price === null || new Decimal(price).isNegative()) return fail(`invalid price "${priceRaw}"`);
+  // An expiration, assignment or exercise closes the contract at 0; the strike is noted on the trade instead.
+  let price = "0";
+  if (!event) {
+    const priceRaw = cell(record, mapping, "price");
+    if (!priceRaw) return fail("missing price");
+    const parsed = parseNumber(priceRaw);
+    if (parsed === null || new Decimal(parsed).isNegative()) return fail(`invalid price "${priceRaw}"`);
+    price = parsed;
+  }
 
   const timeRaw = cell(record, mapping, "time");
   if (!timeRaw) return fail("missing time");
@@ -210,7 +253,24 @@ export function parseFillRow(record: Record<string, string>, mapping: ExecutionM
 
   return {
     ok: true,
-    fill: { row: rowNumber, symbol, assetClass, side, quantity: signed.abs().toFixed(), posEffect, price, time, fees, multiplier, optionType, strikePrice, expiresAt, spread },
+    fill: {
+      row: rowNumber,
+      symbol,
+      assetClass,
+      side,
+      quantity: signed.abs().toFixed(),
+      posEffect,
+      price,
+      time,
+      timeOfDay: hasTimeOfDay(timeRaw),
+      fees,
+      multiplier,
+      optionType,
+      strikePrice,
+      expiresAt,
+      spread,
+      event,
+    },
   };
 }
 
@@ -232,19 +292,43 @@ export interface UnmatchedClose {
   trade: MatchedTrade;
 }
 
+/** How fills that share a time are ordered: by row top to bottom, or bottom up for a dated-only file listed newest first. */
+export type FillOrder = "as-listed" | "newest-first";
+
 export interface MatchResult {
   trades: MatchedTrade[];
   unmatched: UnmatchedClose[];
   warnings: string[];
   fillCount: number;
+  order: FillOrder;
 }
 
 export interface MatchOptions {
   /** Close fills of one position this close together are one exit (an order filled in pieces); further apart they are separate partial closes. */
   mergeWindowSeconds?: number;
+  /** Row order for fills that share a time; read from the file when absent. */
+  order?: FillOrder;
 }
 
 export const DEFAULT_MERGE_WINDOW_SECONDS = 120;
+
+/**
+ * A file whose dates carry no clock time and run newest first (a Schwab
+ * transaction history) is read bottom up, so a same-day open comes before
+ * its close. Files with times, ascending dates or a mixed order keep their
+ * row order.
+ */
+export function fillOrder(fills: Fill[]): FillOrder {
+  if (fills.length < 2 || fills.some((f) => f.timeOfDay)) return "as-listed";
+  const byRow = [...fills].sort((a, b) => a.row - b.row);
+  let descends = false;
+  for (let i = 1; i < byRow.length; i++) {
+    const delta = byRow[i].time.getTime() - byRow[i - 1].time.getTime();
+    if (delta > 0) return "as-listed";
+    if (delta < 0) descends = true;
+  }
+  return descends ? "newest-first" : "as-listed";
+}
 
 interface ClosingBatch {
   quantity: Decimal;
@@ -256,6 +340,8 @@ interface ClosingBatch {
   /** The position's quantity and fees when the batch began, for the fee split. */
   openQuantity: Decimal;
   openFees: Decimal;
+  /** Set when the contract was ended by an expiration, assignment or exercise rather than a fill. */
+  event: FillEvent | null;
 }
 
 interface Position {
@@ -285,6 +371,14 @@ function labelOf(f: Fill): string {
 function rowsText(rows: number[]): string {
   const shown = rows.slice(0, 20).join(", ");
   return rows.length > 20 ? `${shown} and ${rows.length - 20} more` : shown;
+}
+
+/** What an expiration, assignment or exercise did to the trade, for its notes. */
+function eventNote(event: FillEvent | null, f: Fill): string | undefined {
+  if (!event) return undefined;
+  if (event === "EXPIRED") return "Expired worthless: the broker's Expired row closes the contract at 0.";
+  const strike = f.strikePrice ? ` at the ${formatStrike(f.strikePrice)} strike` : "";
+  return `${event === "ASSIGNED" ? "Assigned" : "Exercised"}${strike}: the contract was settled by delivery, so it is closed at 0 and the premium is its whole result; the shares that changed hands at the strike appear as their own stock trade.`;
 }
 
 interface TradeSpec {
@@ -358,6 +452,8 @@ function unmatchedOf(f: Fill, quantity: Decimal, fees: Decimal): UnmatchedClose 
   const label = labelOf(f);
   const side = f.side === "SELL" ? "LONG" : "SHORT";
   const price = toDecimal(f.price);
+  const what =
+    f.event === "EXPIRED" ? "it expired" : f.event === "ASSIGNED" ? "it was assigned" : f.event === "EXERCISED" ? "it was exercised" : `this ${f.side} of ${quantity.toFixed()}`;
   const trade = makeTrade({
     template: f,
     side,
@@ -370,8 +466,12 @@ function unmatchedOf(f: Fill, quantity: Decimal, fees: Decimal): UnmatchedClose 
     rows: [f.row],
     spreads: new Set(f.spread ? [f.spread] : []),
     kind: "unmatched",
-    extraNote:
+    extraNote: [
       "Entry unknown: this closing fill has no matching open in the file, so the position was opened before the statement window. Entry price and time are copied from the exit and the result is the fees only; edit the trade once the real entry is known.",
+      eventNote(f.event, f) ?? "",
+    ]
+      .filter(Boolean)
+      .join(" "),
   });
   return {
     row: f.row,
@@ -379,7 +479,7 @@ function unmatchedOf(f: Fill, quantity: Decimal, fees: Decimal): UnmatchedClose 
     side: f.side,
     quantity: quantity.toFixed(),
     time: f.time,
-    reason: `No open ${label} position in this file before this ${f.side} of ${quantity.toFixed()}: it was opened before the statement window. Export a wider date range, or import it as a closed trade with an unknown entry.`,
+    reason: `No open ${label} position in this file before ${what}: it was opened before the statement window. Export a wider date range, or import it as a closed trade with an unknown entry.`,
     trade,
   };
 }
@@ -392,11 +492,14 @@ function unmatchedOf(f: Fill, quantity: Decimal, fees: Decimal): UnmatchedClose 
  * summed and the entry fees split like a partial close). A close without an
  * open is reported as unmatched. When a fill carries no position effect it
  * is read from the running position: a sell while long closes, a sell while
- * flat opens short.
+ * flat opens short. An expiration, assignment or exercise closes whichever
+ * side is open at 0.
  */
 export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResult {
   const windowMs = (options.mergeWindowSeconds ?? DEFAULT_MERGE_WINDOW_SECONDS) * 1000;
-  const fills = [...input].sort((a, b) => a.time.getTime() - b.time.getTime() || a.row - b.row);
+  const order = options.order ?? fillOrder(input);
+  const rowDirection = order === "newest-first" ? -1 : 1;
+  const fills = [...input].sort((a, b) => a.time.getTime() - b.time.getTime() || (a.row - b.row) * rowDirection);
   const positions = new Map<string, Position>();
   const trades: MatchedTrade[] = [];
   const unmatched: UnmatchedClose[] = [];
@@ -425,6 +528,7 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
         rows: [...p.rows, ...b.rows],
         spreads: p.spreads,
         kind: "closed",
+        extraNote: eventNote(b.event, p.template),
       }),
     );
   };
@@ -459,9 +563,11 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
     const position = positions.get(key);
     const quantity = toDecimal(f.quantity);
     const fees = toDecimal(f.fees);
-    let effect: PositionEffect = f.posEffect ?? (position ? (directionOf(f.side) === position.side ? "OPEN" : "CLOSE") : "OPEN");
-    if (effect === "OPEN" && position && directionOf(f.side) !== position.side) {
-      warnings.push(`Row ${f.row}: ${labelOf(f)} ${f.side} is marked to open while the position is ${position.side.toLowerCase()}; treated as a close.`);
+    // An expiration, assignment or exercise closes whichever side is open.
+    const side: FillSide = f.event && position ? (position.side === "LONG" ? "SELL" : "BUY") : f.side;
+    let effect: PositionEffect = f.posEffect ?? (position ? (directionOf(side) === position.side ? "OPEN" : "CLOSE") : "OPEN");
+    if (effect === "OPEN" && position && directionOf(side) !== position.side) {
+      warnings.push(`Row ${f.row}: ${labelOf(f)} ${side} is marked to open while the position is ${position.side.toLowerCase()}; treated as a close.`);
       effect = "CLOSE";
     }
     if (effect === "OPEN") {
@@ -477,13 +583,14 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
     const excess = quantity.minus(closeQuantity);
     const closeFees = fees.times(closeQuantity).div(quantity);
     if (!position.batch) {
-      position.batch = { quantity: ZERO, value: ZERO, fees: ZERO, exitAt: f.time, rows: [], openQuantity: position.quantity, openFees: position.fees };
+      position.batch = { quantity: ZERO, value: ZERO, fees: ZERO, exitAt: f.time, rows: [], openQuantity: position.quantity, openFees: position.fees, event: null };
     }
     position.batch.quantity = position.batch.quantity.plus(closeQuantity);
     position.batch.value = position.batch.value.plus(toDecimal(f.price).times(closeQuantity));
     position.batch.fees = position.batch.fees.plus(closeFees);
     position.batch.exitAt = f.time;
     position.batch.rows.push(f.row);
+    if (f.event) position.batch.event = f.event;
     position.quantity = position.quantity.minus(closeQuantity);
     if (position.quantity.isZero()) {
       flush(position);
@@ -494,7 +601,7 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
       if (f.posEffect === "CLOSE") {
         unmatched.push(unmatchedOf(f, excess, rest));
       } else {
-        warnings.push(`Row ${f.row}: ${labelOf(f)} ${f.side} ${quantity.toFixed()} closed ${closeQuantity.toFixed()} and opened ${excess.toFixed()} the other way.`);
+        warnings.push(`Row ${f.row}: ${labelOf(f)} ${side} ${quantity.toFixed()} closed ${closeQuantity.toFixed()} and opened ${excess.toFixed()} the other way.`);
         open(key, f, excess, rest);
       }
     }
@@ -520,5 +627,5 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
     );
   }
   trades.sort((a, b) => a.entryAt.getTime() - b.entryAt.getTime() || a.fillRows[0] - b.fillRows[0]);
-  return { trades, unmatched, warnings, fillCount: fills.length };
+  return { trades, unmatched, warnings, fillCount: fills.length, order };
 }

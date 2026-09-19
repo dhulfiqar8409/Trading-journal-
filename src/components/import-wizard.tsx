@@ -5,10 +5,11 @@ import { useRouter } from "next/navigation";
 import Papa from "papaparse";
 import { useMemo, useState } from "react";
 import type { AccountOption } from "@/components/trade-form";
-import { ASSET_CLASSES, FIELD_INFO, IMPORT_FIELDS, guessMapping, parseImportRow, type ColumnMapping, type ImportOptions } from "@/lib/csv";
+import { ASSET_CLASSES, FIELD_INFO, IMPORT_FIELDS, guessMapping, hasExecutionPhrases, parseImportRow, type ColumnMapping, type ImportOptions } from "@/lib/csv";
 import { EXECUTION_FIELDS, EXECUTION_FIELD_INFO, guessExecutionMapping, matchFills, parseFillRow, type ExecutionMapping, type Fill, type MatchResult } from "@/lib/fills";
 import { formatDateTime, formatMoney, formatNumber, formatPrice } from "@/lib/format";
 import { tradeLabel } from "@/lib/options";
+import { SCHWAB_FORMAT, schwabTransactions } from "@/lib/schwab";
 import { isThinkorswimStatement, thinkorswimTradeHistory } from "@/lib/thinkorswim";
 import type { ImportModeKey } from "@/lib/validation";
 
@@ -22,6 +23,8 @@ interface ImportReport {
   duplicates: number;
   errors: { row: number; message: string }[];
   unmatched?: number;
+  /** Rows that were not fills (dividends, transfers, interest) and were left out. */
+  nonTrade?: number;
   batchId?: string;
 }
 
@@ -35,8 +38,13 @@ export interface ImportPresetDTO {
 interface ExecutionPreview {
   fills: number;
   errors: { row: number; message: string }[];
+  /** Non-trade rows left out, with the action that named them. */
+  skipped: { row: number; reason: string }[];
   match: MatchResult;
 }
+
+/** The file format recognised on load, which picks the mode and the mapping. */
+type Detected = "thinkorswim" | "schwab" | "executions" | null;
 
 const MAX_ROWS = 10000;
 const FIELD_LABELS: Record<ImportModeKey, { fields: readonly string[]; info: Record<string, { label: string; required: boolean; hint: string }> }> = {
@@ -54,7 +62,7 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
   const [rows, setRows] = useState<Row[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
   const [mode, setMode] = useState<ImportModeKey>("trades");
-  const [detected, setDetected] = useState<"thinkorswim" | null>(null);
+  const [detected, setDetected] = useState<Detected>(null);
   const [mapping, setMapping] = useState<AnyMapping>({});
   const [includeUnmatched, setIncludeUnmatched] = useState<Set<number>>(new Set());
   const [accountId, setAccountId] = useState(accounts.find((a) => a.isDefault)?.id ?? accounts[0]?.id ?? "");
@@ -72,29 +80,35 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
   );
 
   const tradePreview = useMemo(() => {
-    if (mode !== "trades" || rows.length === 0) return { sample: [], errorCount: 0, okCount: 0 };
+    if (mode !== "trades" || rows.length === 0) return { sample: [], errorCount: 0, okCount: 0, closingCount: 0 };
     let errorCount = 0;
     let okCount = 0;
+    let closingCount = 0; // "Sell to Close" rows: the file lists executions, not trades
     const sample: { index: number; result: ReturnType<typeof parseImportRow> }[] = [];
     rows.forEach((row, i) => {
       const result = parseImportRow(row, mapping as ColumnMapping, options);
       if (result.ok) okCount++;
-      else errorCount++;
+      else {
+        errorCount++;
+        if (result.reason === "closing-execution") closingCount++;
+      }
       if (i < 15) sample.push({ index: i, result });
     });
-    return { sample, errorCount, okCount };
+    return { sample, errorCount, okCount, closingCount };
   }, [mode, rows, mapping, options]);
 
   const executionPreview = useMemo<ExecutionPreview | null>(() => {
     if (mode !== "executions" || rows.length === 0) return null;
     const fills: Fill[] = [];
     const errors: { row: number; message: string }[] = [];
+    const skipped: { row: number; reason: string }[] = [];
     rows.forEach((row, i) => {
       const result = parseFillRow(row, mapping as ExecutionMapping, options, i + 2);
       if (result.ok) fills.push(result.fill);
+      else if (result.skipped) skipped.push({ row: i + 2, reason: result.reason });
       else errors.push({ row: i + 2, message: result.error });
     });
-    return { fills: fills.length, errors, match: matchFills(fills) };
+    return { fills: fills.length, errors, skipped, match: matchFills(fills) };
   }, [mode, rows, mapping, options]);
 
   const currency = accounts.find((a) => a.id === accountId)?.currency ?? "USD";
@@ -180,6 +194,19 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
       }
     }
 
+    // The Schwab website's transaction history: fills as "Buy to Open" / "Sell to Close" rows among dividends and transfers, newest first.
+    const schwab = schwabTransactions(text);
+    if (schwab && schwab.rows.length > 0) {
+      setHeaders(schwab.headers);
+      setRows(schwab.rows.slice(0, MAX_ROWS));
+      setMode("executions");
+      setMapping(guessExecutionMapping(schwab.headers));
+      setDetected("schwab");
+      setZone("user");
+      if (schwab.rows.length > MAX_ROWS) setParseError(`Only the first ${MAX_ROWS.toLocaleString()} rows are imported.`);
+      return;
+    }
+
     const result = Papa.parse<Row>(text, { header: true, skipEmptyLines: "greedy", transformHeader: (h) => h.trim() });
     const fields = (result.meta.fields ?? []).filter((f) => f !== "");
     if (fields.length === 0) {
@@ -195,9 +222,20 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
     });
     setHeaders(fields);
     setRows(data);
+    if (result.data.length > MAX_ROWS) setParseError(`Only the first ${MAX_ROWS.toLocaleString()} rows are imported.`);
+
+    // Any file whose side column says "to open" / "to close" lists executions.
+    const executionMapping = guessExecutionMapping(fields);
+    const sideHeader = executionMapping.side ?? guessMapping(fields).side;
+    if (sideHeader && hasExecutionPhrases(data, sideHeader)) {
+      setMode("executions");
+      setMapping({ ...executionMapping, side: sideHeader });
+      setDetected("executions");
+      setZone("user");
+      return;
+    }
     setMode("trades");
     setMapping(guessMapping(fields));
-    if (result.data.length > MAX_ROWS) setParseError(`Only the first ${MAX_ROWS.toLocaleString()} rows are imported.`);
   }
 
   async function submit() {
@@ -223,6 +261,7 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
   const match = executionPreview?.match ?? null;
   const closedCount = match ? match.trades.filter((t) => t.kind === "closed").length : 0;
   const openCount = match ? match.trades.length - closedCount : 0;
+  const skippedCount = executionPreview?.skipped.length ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -230,8 +269,8 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
         <h2 className="text-sm font-semibold">1. Choose a CSV file</h2>
         <p className="mt-1 text-xs text-muted">
           One row per trade, or one row per execution (fills are matched into trades). Columns are matched automatically and can be adjusted below. Option
-          contracts in the symbol column (SPY240920C00450000, SPY 09/20/2024 450 C) are read as options on the underlying, and a thinkorswim Account
-          Statement is recognised as a whole.
+          contracts in the symbol column (SPY240920C00450000, TSLA 09/25/2026 357.50 P) are read as options on the underlying; a thinkorswim Account
+          Statement and the Schwab website&apos;s transaction history are recognised as a whole.
         </p>
         <label className="btn mt-3 w-fit cursor-pointer">
           {fileName ? "Choose another file" : "Choose file"}
@@ -239,13 +278,16 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
         </label>
         {fileName ? (
           <p className="mt-2 text-sm text-ink-2">
-            {fileName} · {rows.length.toLocaleString()} {mode === "executions" ? "fills" : "rows"} · {headers.length} columns
+            {fileName} · {rows.length.toLocaleString()} rows · {headers.length} columns
           </p>
         ) : null}
-        {detected === "thinkorswim" ? (
+        {detected ? (
           <p role="status" className="mt-2 rounded-lg border border-signature/40 bg-signature-soft px-3 py-2 text-sm">
-            thinkorswim Account Statement detected: only the Account Trade History section is imported ({rows.length.toLocaleString()} fills, matched into trades
-            below); the other sections are ignored. Fill times are read in your zone.
+            {detected === "thinkorswim"
+              ? `thinkorswim Account Statement detected: only the Account Trade History section is imported (${rows.length.toLocaleString()} fills, matched into trades below); the other sections are ignored. Fill times are read in your zone.`
+              : detected === "schwab"
+                ? `${SCHWAB_FORMAT} detected: ${rows.length.toLocaleString()} rows, newest first. Buy and sell rows are fills matched into trades below; dividends, transfers, interest and other non-trade rows are skipped; Expired closes the contract at 0, Assigned and Exchange or Exercise close it with the strike noted. Dates carry no time of day and are read in your zone.`
+                : `Executions detected: the ${mapping.side ?? "side"} column says "to open" and "to close", so each row is read as a fill and matched into trades below. Fill times are read in your zone.`}
           </p>
         ) : null}
         {parseError ? (
@@ -419,10 +461,22 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
                 <p className="text-xs text-muted" data-testid="match-summary">
                   {executionPreview?.fills.toLocaleString()} fills → {match.trades.length} trade{match.trades.length === 1 ? "" : "s"} ({closedCount} closed, {openCount} open)
                   {match.unmatched.length ? <span className="text-warn"> · {match.unmatched.length} unmatched close{match.unmatched.length === 1 ? "" : "s"}</span> : null}
+                  {skippedCount ? <span> · {skippedCount} non-trade row{skippedCount === 1 ? "" : "s"} skipped</span> : null}
                   {executionPreview?.errors.length ? <span className="text-warn"> · {executionPreview.errors.length} row errors (skipped)</span> : null}
                 </p>
               ) : null}
             </div>
+            {mode === "trades" && tradePreview.closingCount ? (
+              <div role="alert" className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warn/40 bg-surface-2 px-3 py-2 text-sm">
+                <span>
+                  {tradePreview.closingCount.toLocaleString()} row{tradePreview.closingCount === 1 ? " says" : "s say"} &quot;to close&quot;: this file lists executions, not
+                  trades. Read each row as a fill and the fills are matched into trades.
+                </span>
+                <button type="button" className="btn btn-sm" onClick={() => switchMode("executions")}>
+                  Switch to executions
+                </button>
+              </div>
+            ) : null}
             {missingRequired.length ? (
               <p role="alert" className="mt-2 text-sm text-loss">
                 Map the required columns first: {missingRequired.map((f) => info[f].label).join(", ")}.
@@ -475,12 +529,25 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
               </div>
             ) : match ? (
               <>
+                {match.order === "newest-first" ? (
+                  <p className="mt-2 text-xs text-muted">Dates without times, newest first: same-day rows are read from the bottom up so an open comes before its close.</p>
+                ) : null}
                 {match.warnings.length ? (
                   <ul className="mt-2 flex flex-col gap-1 text-xs text-warn" aria-label="Matching notes">
                     {match.warnings.slice(0, 20).map((w) => (
                       <li key={w}>{w}</li>
                     ))}
                   </ul>
+                ) : null}
+                {skippedCount ? (
+                  <p className="mt-2 text-xs text-muted" data-testid="skipped-rows">
+                    Skipped {skippedCount} non-trade row{skippedCount === 1 ? "" : "s"}:{" "}
+                    {executionPreview?.skipped
+                      .slice(0, 8)
+                      .map((r) => `row ${r.row} (${r.reason})`)
+                      .join(", ")}
+                    {skippedCount > 8 ? ` and ${skippedCount - 8} more` : ""}.
+                  </p>
                 ) : null}
                 <div className="mt-3 overflow-x-auto">
                   <table className="table min-w-[640px]" aria-label="Matched trades">
@@ -610,6 +677,11 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
                 {report.unmatched ? (
                   <p className="mt-2 text-xs text-ink-2">
                     {report.unmatched} unmatched close{report.unmatched === 1 ? "" : "s"} left out; export a wider date range to include {report.unmatched === 1 ? "it" : "them"}.
+                  </p>
+                ) : null}
+                {report.nonTrade ? (
+                  <p className="mt-2 text-xs text-ink-2">
+                    {report.nonTrade} non-trade row{report.nonTrade === 1 ? "" : "s"} (dividends, transfers, interest) skipped.
                   </p>
                 ) : null}
                 {report.errors.length ? (

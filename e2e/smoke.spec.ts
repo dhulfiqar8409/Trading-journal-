@@ -41,6 +41,11 @@ const yearSuffix = expiryObj.getUTCFullYear() === new Date().getUTCFullYear() ? 
 const tosSymbol = `TOS${stamp}`;
 const tosStatement = readFileSync(path.join(__dirname, "fixtures", "thinkorswim-statement.csv"), "utf8").replace(/\b(AAPL|SPY|TSLA|NVDA|MSFT|QQQ)\b/g, (m) => `${tosSymbol}${m[0]}`);
 const optionLabel = `${optionSymbol} 450C ${MONTHS[expiryObj.getUTCMonth()].slice(0, 3)} ${expiryObj.getUTCDate()}${yearSuffix}`;
+// A Schwab transaction history with this run's symbols. Its contracts sit in the symbol column ("TSLA 09/25/2026 357.50 P"), where an
+// underlying is at most six characters, so the stamp is shortened; the lead letter avoids the stamp so no other run symbol contains it.
+const schSymbol = `${stamp.at(-5) === "S" ? "K" : "S"}${stamp.slice(-4)}`;
+const SCHWAB_TICKERS: Record<string, string> = { AAPL: "A", SPY: "S", TSLA: "T", NVDA: "N", MSFT: "M", QQQ: "Q", AMD: "D" };
+const schwabHistory = readFileSync(path.join(__dirname, "fixtures", "schwab-transactions.csv"), "utf8").replace(/\b(AAPL|SPY|TSLA|NVDA|MSFT|QQQ|AMD)\b/g, (m) => `${schSymbol}${SCHWAB_TICKERS[m]}`);
 
 let page: Page;
 
@@ -357,6 +362,77 @@ test("a thinkorswim statement becomes round trips, flags an unmatched close, and
   await batch.getByRole("button", { name: "Undo import" }).click();
   await expect(history.getByRole("listitem").filter({ hasText: "8 inserted" })).toHaveCount(0);
   await page.goto(`/trades?symbol=${tosSymbol}`);
+  await expect(page.getByText("No trades match these filters.")).toBeVisible();
+});
+
+test("a Schwab transaction history is recognised: phrases, non-trade rows, expirations and assignments", async () => {
+  // Any file whose side column says "to open" / "to close" is read as executions.
+  await page.goto("/import");
+  const phrased = ["Symbol,Side,Qty,Price,Time", `${schSymbol}X,Buy to Open,10,20,2025-09-11 09:30`, `${schSymbol}X,Sell to Close,10,22,2025-09-11 10:00`].join("\n");
+  await page.setInputFiles("input[type=file]", { name: "fills.csv", mimeType: "text/csv", buffer: Buffer.from(phrased) });
+  await expect(page.getByRole("status").filter({ hasText: "Executions detected" })).toBeVisible();
+  await expect(page.getByLabel(/An execution/)).toBeChecked();
+  await expect(page.getByTestId("match-summary")).toContainText("2 fills → 1 trade (1 closed, 0 open)");
+
+  // The Schwab export itself: newest first, no times, phrases in the Action column, non-trade rows in between.
+  await page.setInputFiles("input[type=file]", { name: "schwab.csv", mimeType: "text/csv", buffer: Buffer.from(schwabHistory) });
+  await expect(page.getByRole("status").filter({ hasText: "Schwab transaction history detected" })).toBeVisible();
+  await expect(page.getByLabel(/An execution/)).toBeChecked();
+  for (const [field, header] of [
+    ["symbol", "Symbol"],
+    ["side", "Action"],
+    ["quantity", "Quantity"],
+    ["price", "Price"],
+    ["time", "Date"],
+    ["fees", "Fees & Comm"],
+  ] as const) {
+    await expect(page.locator(`#map-${field}`)).toHaveValue(header);
+  }
+  const summary = page.getByTestId("match-summary");
+  await expect(summary).toContainText("17 fills → 10 trades (8 closed, 2 open)");
+  await expect(summary).toContainText("5 non-trade rows skipped");
+  await expect(page.locator("section[aria-label='Unmatched closes']")).toHaveCount(0);
+  await expect(page.getByTestId("skipped-rows")).toContainText("Bank Interest");
+  const matched = page.locator("table[aria-label='Matched trades']");
+  await expect(matched.getByRole("row").filter({ hasText: `${schSymbol}T 357.5P` })).toContainText("+$228.68"); // same-day open and close, read bottom up
+  await expect(matched.getByRole("row").filter({ hasText: `${schSymbol}N 215P` })).toContainText("-$361.31"); // expired at 0
+  await expect(matched.getByRole("row").filter({ hasText: `${schSymbol}D 150P` })).toContainText("+$259.34"); // assigned: the premium is the result
+  await expect(matched.getByRole("row").filter({ hasText: `${schSymbol}Q 480C` }).filter({ hasText: "CLOSED" })).toContainText("+$177.38");
+  await expect(matched.getByRole("row").filter({ hasText: `${schSymbol}Q 480C` }).filter({ hasText: "OPEN" })).toBeVisible();
+  await shot("35-schwab-preview");
+
+  // Reading the rows as trades by hand flags the closing phrases and offers the way back.
+  await page.getByLabel(/A trade/).check();
+  const closing = page.getByRole("alert").filter({ hasText: "this file lists executions" });
+  await expect(closing).toBeVisible();
+  await closing.getByRole("button", { name: "Switch to executions" }).click();
+  await expect(page.getByLabel(/An execution/)).toBeChecked();
+  await expect(summary).toContainText("17 fills → 10 trades");
+
+  await page.getByRole("button", { name: "Import 10 trades" }).click();
+  const report = page.getByRole("status").filter({ hasText: "Import finished" });
+  await expect(report.locator("li").nth(0)).toContainText("10");
+  await expect(report).toContainText("5 non-trade rows");
+
+  await page.goto(`/trades?symbol=${schSymbol}`);
+  await expect(page.getByText("1–10 of 10")).toBeVisible();
+  await page.goto(`/trades?symbol=${schSymbol}N`);
+  await page.getByRole("link", { name: new RegExp(`${schSymbol}N 215P`) }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await expect(page.locator("p", { hasText: /Expired worthless/ })).toBeVisible();
+  await page.goto(`/trades?symbol=${schSymbol}D`);
+  await page.getByRole("link", { name: new RegExp(`${schSymbol}D 150P`) }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await expect(page.locator("p", { hasText: /Assigned at the 150 strike/ })).toBeVisible();
+
+  // Undo the import so the rest of the run starts from a flat book.
+  await page.goto("/import");
+  const history = page.locator("section[aria-label='Import history']");
+  const batch = history.getByRole("listitem").filter({ hasText: "schwab.csv" });
+  await expect(batch).toContainText("10 inserted");
+  await batch.getByRole("button", { name: "Undo import" }).click();
+  await expect(history.getByRole("listitem").filter({ hasText: "schwab.csv" })).toHaveCount(0);
+  await page.goto(`/trades?symbol=${schSymbol}`);
   await expect(page.getByText("No trades match these filters.")).toBeVisible();
 });
 

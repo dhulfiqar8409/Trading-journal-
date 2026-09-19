@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseFlexibleDate } from "@/lib/dates";
+import { hasTimeOfDay, parseFlexibleDate } from "@/lib/dates";
 
 const iso = (s: string, opts?: Parameters<typeof parseFlexibleDate>[1]) => parseFlexibleDate(s, opts)?.toISOString() ?? null;
 
@@ -59,5 +59,22 @@ describe("parseFlexibleDate", () => {
     expect(iso("13/13/2024")).toBeNull();
     expect(iso("2024-03-12 25:00")).toBeNull();
     expect(iso("3/12/2024 13:00 PM")).toBeNull();
+  });
+});
+
+describe("dates with an 'as of' suffix and the time-of-day check", () => {
+  it("uses the first date of a posting-date pair", () => {
+    expect(iso("09/14/2026 as of 09/12/2026")).toBe("2026-09-14T00:00:00.000Z");
+    expect(iso("09/14/2026 AS OF 09/12/2026", { timeZone: "America/New_York" })).toBe("2026-09-14T04:00:00.000Z");
+    expect(iso("as of 09/12/2026")).toBeNull();
+  });
+
+  it("tells a clock time from a bare date", () => {
+    expect(hasTimeOfDay("9/17/26 09:31:05")).toBe(true);
+    expect(hasTimeOfDay("2026-09-17T13:31:05Z")).toBe(true);
+    expect(hasTimeOfDay("1758115865")).toBe(true);
+    expect(hasTimeOfDay("09/17/2026")).toBe(false);
+    expect(hasTimeOfDay("09/14/2026 as of 09/12/2026")).toBe(false);
+    expect(hasTimeOfDay("20 SEP 26")).toBe(false);
   });
 });

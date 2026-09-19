@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { guessMapping, parseAssetClass, parseImportRow, parseNumber, parseOptionType, parseSide, type ColumnMapping } from "@/lib/csv";
+import { guessMapping, hasExecutionPhrases, isClosingAction, isExecutionPhrase, nonTradeAction, parseAction, parseAssetClass, parseImportRow, parseNumber, parseOptionType, parseSide, type ColumnMapping } from "@/lib/csv";
 import { importHash, importHashKey } from "@/lib/import-hash";
 
 describe("guessMapping", () => {
@@ -61,7 +61,49 @@ describe("cell parsers", () => {
     expect(parseSide("short")).toBe("SHORT");
     expect(parseSide("Sell")).toBe("SHORT");
     expect(parseSide("SLD")).toBe("SHORT");
+    expect(parseSide("Buy to Open")).toBe("LONG");
+    expect(parseSide("Sell to Open")).toBe("SHORT");
+    expect(parseSide("Sell to Close")).toBeNull(); // a closing execution is not a side of a trade
     expect(parseSide("sideways")).toBeNull();
+  });
+
+  it("parses combined side-and-effect phrases, case and punctuation aside", () => {
+    expect(parseAction("Buy to Open")).toEqual({ side: "BUY", effect: "OPEN" });
+    expect(parseAction("SELL TO CLOSE")).toEqual({ side: "SELL", effect: "CLOSE" });
+    expect(parseAction("sell_to_open")).toEqual({ side: "SELL", effect: "OPEN" });
+    expect(parseAction("Buy To Close")).toEqual({ side: "BUY", effect: "CLOSE" });
+    expect(parseAction("BTO")).toEqual({ side: "BUY", effect: "OPEN" });
+    expect(parseAction("stc")).toEqual({ side: "SELL", effect: "CLOSE" });
+    expect(parseAction("STO")).toEqual({ side: "SELL", effect: "OPEN" });
+    expect(parseAction("BTC")).toEqual({ side: "BUY", effect: "CLOSE" });
+    expect(parseAction("Bought To Open")).toEqual({ side: "BUY", effect: "OPEN" });
+    expect(parseAction("Sold to Close")).toEqual({ side: "SELL", effect: "CLOSE" });
+    expect(parseAction("Bought")).toEqual({ side: "BUY", effect: null });
+    expect(parseAction("Sold")).toEqual({ side: "SELL", effect: null });
+    expect(parseAction("Buy")).toEqual({ side: "BUY", effect: null });
+    expect(parseAction("sell")).toEqual({ side: "SELL", effect: null });
+    expect(parseAction("Sell Short")).toEqual({ side: "SELL", effect: "OPEN" });
+    expect(parseAction("Buy to Cover")).toEqual({ side: "BUY", effect: "CLOSE" });
+    expect(parseAction("Dividend")).toBeNull();
+    expect(parseAction("")).toBeNull();
+    expect(isClosingAction("Sell to Close")).toBe(true);
+    expect(isClosingAction("Buy to Open")).toBe(false);
+  });
+
+  it("tells execution phrases and non-trade actions apart", () => {
+    expect(isExecutionPhrase("Sell to Close")).toBe(true);
+    expect(isExecutionPhrase("bto")).toBe(true);
+    expect(isExecutionPhrase("Buy")).toBe(false);
+    expect(isExecutionPhrase("Sell Short")).toBe(false); // a plain short trade may be listed that way
+    expect(hasExecutionPhrases([{ Action: "Buy" }, { Action: "Sell to Close" }], "Action")).toBe(true);
+    expect(hasExecutionPhrases([{ Action: "Buy" }, { Action: "Sell" }], "Action")).toBe(false);
+    expect(hasExecutionPhrases([{ Side: "Long" }], "Action")).toBe(false);
+    for (const action of ["Journal", "Bank Interest", "MoneyLink Transfer", "Dividend", "Qualified Dividend", "Reinvest Shares", "Stock Split", "Service Fee", "Wire Funds"]) {
+      expect(nonTradeAction(action), action).toBe(action);
+    }
+    expect(nonTradeAction("Buy to Open")).toBeNull();
+    expect(nonTradeAction("Expired")).toBeNull();
+    expect(nonTradeAction("")).toBeNull();
   });
 
   it("parses asset classes", () => {
@@ -258,5 +300,28 @@ describe("import hash", () => {
     expect(importHash({ ...identity, quantity: "101" })).not.toBe(h);
     expect(importHash({ ...identity, entryAt: new Date("2024-03-12T09:32:00Z") })).not.toBe(h);
     expect(h).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("closing executions in a trade file", () => {
+  const mapping: ColumnMapping = { symbol: "Symbol", side: "Action", quantity: "Quantity", entryPrice: "Price", entryAt: "Date", fees: "Fees & Comm" };
+  const row = { Date: "09/17/2026", Action: "Buy to Open", Symbol: "TSLA 09/25/2026 357.50 P", Quantity: "1", Price: "$4.10", "Fees & Comm": "$0.66" };
+
+  it("reads opening phrases as the side and refuses closing ones with a pointer to the executions mode", () => {
+    const open = parseImportRow(row, mapping);
+    expect(open.ok && open.row).toMatchObject({ symbol: "TSLA", side: "LONG", assetClass: "OPTION", optionType: "PUT", strikePrice: "357.5", entryPrice: "4.1", status: "OPEN" });
+    const short = parseImportRow({ ...row, Action: "Sell to Open" }, mapping);
+    expect(short.ok && short.row.side).toBe("SHORT");
+    for (const action of ["Sell to Close", "Buy to Close", "STC", "btc"]) {
+      const closing = parseImportRow({ ...row, Action: action }, mapping);
+      expect(closing.ok).toBe(false);
+      if (closing.ok) continue;
+      expect(closing.reason).toBe("closing-execution");
+      expect(closing.error).toContain(`closing execution "${action}"`);
+      expect(closing.error).toContain("An execution");
+    }
+    const odd = parseImportRow({ ...row, Action: "Hold" }, mapping);
+    expect(!odd.ok && odd.reason).toBeUndefined();
+    expect(!odd.ok && odd.error).toBe('unrecognised side "Hold"');
   });
 });

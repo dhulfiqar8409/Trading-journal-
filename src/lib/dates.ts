@@ -131,8 +131,15 @@ function parseDatePart(text: string, dayFirst: boolean): { year: number; month: 
   return null;
 }
 
-export function parseFlexibleDate(input: string, options: ParseDateOptions = {}): Date | null {
+/** True when the value carries a clock time (or is a timestamp); false for a bare date such as "09/17/2026". */
+export function hasTimeOfDay(input: string): boolean {
   const raw = input.trim();
+  return /\d{1,2}:\d{2}/.test(raw) || /^\d{10}$|^\d{13}$/.test(raw);
+}
+
+export function parseFlexibleDate(input: string, options: ParseDateOptions = {}): Date | null {
+  // "09/17/2026 as of 09/16/2026": a posting date with the day it applies to; the first date counts.
+  const raw = input.trim().replace(/\s+as\s+of\s+.+$/i, "").trim();
   if (!raw) return null;
   const timeZone = options.timeZone ?? "UTC";
 

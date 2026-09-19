@@ -45,7 +45,9 @@ interface with green and red reserved for the sign of P&L.
   mappings per broker, and full exports as JSON and CSV.
 - **Imports that match the broker**: a CSV can hold one row per trade or one row per execution;
   fills are matched into round trips per contract, a thinkorswim Account Statement is recognised
-  and only its Account Trade History is read, and importing the same file twice adds nothing.
+  and only its Account Trade History is read, the Schwab website's transaction history is
+  recognised with its "Buy to Open" / "Sell to Close" phrases, non-trade rows, expirations and
+  assignments, and importing the same file twice adds nothing.
 - **Cleaning up**: every import is a batch that can be undone from the Import page, the trades
   list has checkboxes with "Delete selected" (a page or the whole filter), and an admin can wipe
   one account's trades after typing the username.
@@ -148,6 +150,26 @@ A thinkorswim (Schwab) Account Statement is recognised by its "Account Trade His
 only that section is parsed (leading empty column, `9/17/26 09:31:05` times read in your zone,
 `20 SEP 26` expirations, legs of a spread taking the first leg's time), everything else in the
 file is ignored, and the executions mode is selected automatically.
+
+Side cells may combine side and effect: "Buy to Open", "Sell to Close", "Sell to Open", "Buy to
+Close", BTO/STC/STO/BTC, "Bought"/"Sold" and "Sell Short"/"Buy to Cover", in any case. In the
+executions mode the phrase supplies the position effect when no effect column is mapped. In the
+trades mode a row that says "to close" is not a trade: it is reported as a closing execution and
+the preview offers "Switch to executions". Any file whose side column carries such phrases is
+opened in the executions mode straight away.
+
+The Schwab website's transaction history (Date, Action, Symbol, Description, Quantity, Price,
+Fees & Comm, Amount; newest first; no time of day) is recognised by its header set. Symbols such
+as `TSLA 09/25/2026 357.50 P` are read as contracts, dollar signs and thousands separators are
+stripped, and a `09/14/2026 as of 09/12/2026` date uses the first date. Journal, Bank Interest,
+MoneyLink Transfer, Dividend, Reinvest Shares and other non-trade actions are skipped and
+counted in the preview. "Expired" closes the matching contract at 0 on that date; "Assigned" and
+"Exchange or Exercise" close it at 0 as well, with the strike in the notes: the contract was
+settled by delivery, so its premium is the whole result, and the shares that changed hands at
+the strike appear as their own Buy or Sell rows and therefore as their own stock trade (closing
+the option at the strike price instead would show a five-figure loss on a one-lot put). Because
+the rows carry no time of day, a file listed newest first is read from the bottom up so a
+same-day open comes before its close; an ascending file keeps its order.
 
 ### Cleaning up
 

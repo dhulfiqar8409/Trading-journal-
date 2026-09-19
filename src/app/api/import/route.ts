@@ -39,6 +39,7 @@ export async function POST(request: Request) {
   const seen = new Set<string>();
   let duplicates = 0;
   let unmatchedSkipped = 0;
+  let nonTrade = 0;
   const consider = (rowNumber: number, row: ParsedImportRow) => {
     const hash = hashKey(row.importHashKey);
     if (seen.has(hash)) {
@@ -54,6 +55,7 @@ export async function POST(request: Request) {
     rows.forEach((record, i) => {
       const result = parseFillRow(record, parsed.data.mapping, options, i + 2);
       if (result.ok) fills.push(result.fill);
+      else if (result.skipped) nonTrade++; // dividends, transfers, interest: not fills
       else errors.push({ row: i + 2, message: result.error });
     });
     const match = matchFills(fills);
@@ -128,7 +130,7 @@ export async function POST(request: Request) {
     failed = true;
   } finally {
     await db.importBatch
-      .update({ where: { id: batch.id }, data: { inserted, skipped: duplicates + unmatchedSkipped, errors: errors.length } })
+      .update({ where: { id: batch.id }, data: { inserted, skipped: duplicates + unmatchedSkipped + nonTrade, errors: errors.length } })
       .catch((error: unknown) => console.error("import batch update failed", error));
   }
   if (failed) return NextResponse.json({ error: "Import failed while saving trades. Some rows may have been inserted; undo the import from the history below." }, { status: 500 });
@@ -136,5 +138,5 @@ export async function POST(request: Request) {
   revalidatePath("/");
   revalidatePath("/trades");
   revalidatePath("/import");
-  return NextResponse.json({ total: rows.length, inserted, duplicates, errors, unmatched: unmatchedSkipped, batchId: batch.id });
+  return NextResponse.json({ total: rows.length, inserted, duplicates, errors, unmatched: unmatchedSkipped, nonTrade, batchId: batch.id });
 }

@@ -89,6 +89,9 @@ describe("parseOptionSymbol", () => {
     expect(parseOptionSymbol("SPY 20 SEP 2024 $450 C")).toEqual(expected);
     expect(parseOptionSymbol("SPY 450C 09/20/2024")).toEqual(expected);
     expect(parseOptionSymbol("SPY 2024-09-20 C 450")).toEqual(expected);
+    // The Schwab website's transaction history form.
+    expect(parseOptionSymbol("TSLA 09/25/2026 357.50 P")).toEqual({ underlying: "TSLA", expiration: "2026-09-25", optionType: "PUT", strike: "357.5" });
+    expect(parseOptionSymbol("NVDA 09/28/2026 215.00 P")).toEqual({ underlying: "NVDA", expiration: "2026-09-28", optionType: "PUT", strike: "215" });
     expect(parseOptionSymbol("SPY_092024_450C")).toBeNull(); // month-year only is not a day
   });
 

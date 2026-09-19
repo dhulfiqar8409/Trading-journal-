@@ -61,9 +61,18 @@ Guiding rules:
   the notes, and a close with no open in the file is listed as unmatched (opened before the
   statement window) and skipped unless the owner ticks it, which stores it as a closed trade with
   an unknown entry marked in the notes. The position effect is inferred from the running position
-  when the file has none. A thinkorswim Account Statement is recognised and only its Account
-  Trade History section is read. Each import is an `ImportBatch` (file, mode, counts) that the
-  Import page lists and can undo.
+  when the file has none. Side cells may combine side and effect ("Buy to Open", "Sell to
+  Close", BTO/STC, "Bought"/"Sold"); in the trades mode a "to close" row is a closing execution
+  error with a one-tap "Switch to executions", and a file whose side column carries such phrases
+  opens in the executions mode. A thinkorswim Account Statement is recognised and only its
+  Account Trade History section is read. The Schwab website's transaction history is recognised
+  by its header set (Date, Action, Symbol, Description, Quantity, Price, Fees & Comm, Amount):
+  non-trade actions (Journal, Dividend, Bank Interest, MoneyLink Transfer, Reinvest Shares) are
+  skipped and counted, "Expired" closes the contract at 0, "Assigned" and "Exchange or Exercise"
+  close it at 0 with the strike noted (the shares appear as their own stock rows), money cells
+  lose their dollar signs and commas, "as of" dates use the first date, and a dated-only file
+  listed newest first is read bottom up so same-day opens precede closes. Each import is an
+  `ImportBatch` (file, mode, counts) that the Import page lists and can undo.
 - **Deleting in bulk**: checkboxes on trade rows and cards with select-all for the page or the
   whole filter and a "Delete selected" confirmation that states the count; an admin can delete all
   trades of one account from `/admin/users` after typing the username (trades, screenshots and

@@ -90,7 +90,14 @@ export interface ParsedImportRow {
   importHashKey: string;
 }
 
-export type RowResult = { ok: true; row: ParsedImportRow } | { ok: false; error: string };
+export type RowResult =
+  | { ok: true; row: ParsedImportRow }
+  | {
+      ok: false;
+      error: string;
+      /** Set when the row is a closing execution ("Sell to Close"), which belongs in the executions mode rather than a trade row. */
+      reason?: "closing-execution";
+    };
 
 export function normalizeHeader(header: string): string {
   return header.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
@@ -104,7 +111,7 @@ const SYNONYMS: Record<ImportField, string[]> = {
   exitPrice: ["exitprice", "exit", "closeprice", "avgexit", "averageexit", "avgexitprice", "sellprice", "priceout", "closingprice", "exitavg", "close", "soldprice", "closelevel"],
   entryAt: ["entrydate", "entrytime", "entrydatetime", "entrytimestamp", "opendate", "opentime", "opendatetime", "opened", "dateopened", "openedat", "entryat", "boughttimestamp", "datetime", "timestamp", "date", "time", "tradedate", "opentimestamp", "exectime", "executiontime", "filltime", "boughtat", "opendatetimeutc"],
   exitAt: ["exitdate", "exittime", "exitdatetime", "exittimestamp", "closedate", "closetime", "closedatetime", "closed", "dateclosed", "closedat", "exitat", "soldtimestamp", "closetimestamp", "soldat", "closedatetimeutc"],
-  fees: ["fees", "fee", "commission", "commissions", "comm", "feesandcommissions", "totalfees", "commissionsandfees", "cost", "commfee", "commandfee", "commissionfee", "charges"],
+  fees: ["fees", "fee", "commission", "commissions", "comm", "feesandcommissions", "feesandcomm", "feescomm", "totalfees", "commissionsandfees", "cost", "commfee", "commandfee", "commissionfee", "charges"],
   pnl: ["pnl", "pandl", "pl", "netpnl", "netpandl", "netpl", "profit", "profitloss", "profitandloss", "realizedpnl", "realizedpandl", "realized", "netprofit", "gain", "gainloss", "result", "net", "return", "realizedpl", "profitlossusd", "plusd", "netpnlusd"],
   assetClass: ["assetclass", "assettype", "instrumenttype", "producttype", "product", "securitytype", "class", "type"],
   multiplier: ["multiplier", "pointvalue", "contractsize", "contractmultiplier", "lotsize", "tickvalue"],
@@ -156,11 +163,151 @@ export function guessMapping(headers: string[]): ColumnMapping {
   return guessMappingFor(headers, IMPORT_FIELDS, SYNONYMS);
 }
 
-export function parseSide(raw: string): Side | null {
-  const v = raw.trim().toLowerCase();
-  if (["long", "buy", "b", "l", "bought", "bot", "bto", "buy to open", "buytoopen", "purchase"].includes(v)) return "LONG";
-  if (["short", "sell", "s", "sh", "sold", "sld", "sto", "sell short", "sellshort", "sell to open", "selltoopen"].includes(v)) return "SHORT";
+export type ActionSide = "BUY" | "SELL";
+export type PositionEffect = "OPEN" | "CLOSE";
+/** A side cell read: BUY or SELL, and whether the cell also says the fill opens or closes a position. */
+export interface ParsedAction {
+  side: ActionSide;
+  effect: PositionEffect | null;
+}
+
+/** Letters only, lower case: "Sell to Close" and "SELL_TO_CLOSE" both read as "selltoclose". */
+function letters(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[^a-z]/g, "");
+}
+
+const SIDE_WORDS: Record<string, ActionSide> = {
+  buy: "BUY",
+  b: "BUY",
+  l: "BUY",
+  bot: "BUY",
+  bought: "BUY",
+  long: "BUY",
+  purchase: "BUY",
+  purchased: "BUY",
+  sell: "SELL",
+  s: "SELL",
+  sh: "SELL",
+  sld: "SELL",
+  sold: "SELL",
+  short: "SELL",
+  sale: "SELL",
+};
+const ACTION_PHRASES: Record<string, ParsedAction> = {
+  bto: { side: "BUY", effect: "OPEN" },
+  btc: { side: "BUY", effect: "CLOSE" },
+  sto: { side: "SELL", effect: "OPEN" },
+  stc: { side: "SELL", effect: "CLOSE" },
+  sellshort: { side: "SELL", effect: "OPEN" },
+  soldshort: { side: "SELL", effect: "OPEN" },
+  shortsell: { side: "SELL", effect: "OPEN" },
+  shortsale: { side: "SELL", effect: "OPEN" },
+  cover: { side: "BUY", effect: "CLOSE" },
+};
+const EFFECT_SUFFIXES: [string, PositionEffect][] = [
+  ["toopen", "OPEN"],
+  ["opening", "OPEN"],
+  ["open", "OPEN"],
+  ["toclose", "CLOSE"],
+  ["closing", "CLOSE"],
+  ["close", "CLOSE"],
+  ["tocover", "CLOSE"],
+];
+
+/**
+ * BUY or SELL from a side or action cell, with the position effect when the
+ * cell carries one: "Buy to Open", "Sell to Close", BTO, STC, "Bought To Open",
+ * "Sell Short", "Buy to Cover". Case and punctuation do not matter. Null for a
+ * cell that is not a side at all.
+ */
+export function parseAction(raw: string): ParsedAction | null {
+  const v = letters(raw);
+  if (!v) return null;
+  const phrase = ACTION_PHRASES[v];
+  if (phrase) return phrase;
+  const word = SIDE_WORDS[v];
+  if (word) return { side: word, effect: null };
+  for (const [suffix, effect] of EFFECT_SUFFIXES) {
+    if (!v.endsWith(suffix) || v.length === suffix.length) continue;
+    const side = SIDE_WORDS[v.slice(0, -suffix.length)];
+    if (side) return { side, effect };
+  }
   return null;
+}
+
+/** True for "Sell to Close", "Buy to Close", STC, BTC and "Buy to Cover": a fill that closes a position, never a trade of its own. */
+export function isClosingAction(raw: string): boolean {
+  return parseAction(raw)?.effect === "CLOSE";
+}
+
+const EXECUTION_PHRASE_RE = /^(?:bto|btc|sto|stc)$|to(?:open|close|cover)$/;
+
+/** True for the phrases only an execution list carries: "to open", "to close", "to cover", BTO, STC and friends. */
+export function isExecutionPhrase(raw: string): boolean {
+  return EXECUTION_PHRASE_RE.test(letters(raw));
+}
+
+/** True when the column carries execution phrases in any row, so the file lists fills rather than trades. */
+export function hasExecutionPhrases(rows: Record<string, string>[], header: string): boolean {
+  return rows.some((row) => isExecutionPhrase(row[header] ?? ""));
+}
+
+const NON_TRADE_WORDS = [
+  "journal",
+  "interest",
+  "transfer",
+  "dividend",
+  "div",
+  "reinvest",
+  "deposit",
+  "withdrawal",
+  "wire",
+  "fee",
+  "split",
+  "merger",
+  "reorg",
+  "redemption",
+  "spinoff",
+  "namechange",
+  "tax",
+  "capgain",
+  "cashinlieu",
+  "misccash",
+  "funds",
+  "adj",
+  "tender",
+  "conversion",
+  "rights",
+  "credit",
+  "debit",
+  "moneylink",
+  "check",
+  "sweep",
+  "margin",
+  "rebate",
+  "refund",
+  "royalty",
+  "distribution",
+  "return",
+  "liquidation",
+];
+
+/**
+ * The action, trimmed, when the cell names a cash or corporate event rather
+ * than a fill: Journal, Bank Interest, MoneyLink Transfer, Dividend, Reinvest
+ * Shares, Stock Split and the like. Null when it does not.
+ */
+export function nonTradeAction(raw: string): string | null {
+  const v = letters(raw);
+  if (!v) return null;
+  return NON_TRADE_WORDS.some((word) => v.includes(word)) ? raw.trim() : null;
+}
+
+/** LONG or SHORT from the side cell of a trade row; a closing execution ("Sell to Close") is not a side of a trade and reads as null. */
+export function parseSide(raw: string): Side | null {
+  const action = parseAction(raw);
+  if (!action || action.effect === "CLOSE") return null;
+  return action.side === "BUY" ? "LONG" : "SHORT";
 }
 
 export function parseOptionType(raw: string): OptionType | null {
@@ -236,8 +383,16 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
   let side: Side | null = null;
   const sideRaw = cell(record, mapping, "side");
   if (sideRaw) {
-    side = parseSide(sideRaw);
-    if (!side) return fail(`unrecognised side "${sideRaw}"`);
+    const action = parseAction(sideRaw);
+    if (!action) return fail(`unrecognised side "${sideRaw}"`);
+    if (action.effect === "CLOSE") {
+      return {
+        ok: false,
+        error: `closing execution "${sideRaw}": this file lists fills, not trades; choose "An execution" under "Each row is" so they are matched into trades`,
+        reason: "closing-execution",
+      };
+    }
+    side = action.side === "BUY" ? "LONG" : "SHORT";
   }
   if (!side) side = quantity.isNegative() ? "SHORT" : "LONG";
   quantity = quantity.abs();
