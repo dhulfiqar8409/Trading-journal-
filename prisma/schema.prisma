@@ -73,6 +73,11 @@ enum OptionType {
   PUT
 }
 
+enum ImportMode {
+  TRADES
+  EXECUTIONS
+}
+
 model User {
   id                 String      @id @default(cuid())
   /** Sign-in name, stored lowercase so uniqueness is case-insensitive. */
@@ -100,6 +105,7 @@ model User {
   pendingUploads PendingUpload[]
   importPresets  ImportPreset[]
   shareLinks     ShareLink[]
+  importBatches  ImportBatch[]
 }
 
 model Account {
@@ -146,11 +152,14 @@ model Trade {
   rating      Int?
   mistakes    String?
   importHash  String?
+  /** The import that created the trade, so a bad import can be undone as a whole. */
+  importBatchId String?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   account     Account      @relation(fields: [accountId], references: [id])
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   tags        Tag[]
   attachments Attachment[]
   ruleEvents  RuleEvent[]
@@ -160,6 +169,7 @@ model Trade {
   @@index([userId, symbol])
   @@index([userId, status])
   @@index([accountId])
+  @@index([importBatchId])
 }
 
 model Tag {
@@ -265,6 +275,23 @@ model PendingUpload {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+/** One CSV import: what was brought in and how it went, so it can be listed and undone. */
+model ImportBatch {
+  id        String     @id @default(cuid())
+  userId    String
+  filename  String
+  mode      ImportMode @default(TRADES)
+  inserted  Int        @default(0)
+  skipped   Int        @default(0)
+  errors    Int        @default(0)
+  createdAt DateTime   @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trades Trade[]
+
+  @@index([userId, createdAt])
 }
 
 /** A saved CSV column mapping for one broker export format. */

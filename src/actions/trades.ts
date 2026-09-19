@@ -7,14 +7,15 @@ import { requireUser, type CurrentUser } from "@/lib/auth";
 import { fullCloseNotes, partialCloseNotes, planClose, remainderNotes } from "@/lib/close";
 import { db } from "@/lib/db";
 import { toDecimal, toPlainString, type Decimal } from "@/lib/decimal";
-import { failure, formToObject, success, zodErrorToResult, type ActionResult, type ActionState } from "@/lib/form";
+import { failure, formToObject, safeRedirectPath, success, zodErrorToResult, type ActionResult, type ActionState } from "@/lib/form";
 import { expirationInstant, expirationKey, tradeLabel } from "@/lib/options";
 import { computeTradeMetrics } from "@/lib/pnl";
 import { evaluateCandidate } from "@/lib/queries/rules";
+import { buildTradeWhere } from "@/lib/queries/trades";
 import type { Evaluation, RuleTrade } from "@/lib/rules";
 import { dateKeyInZone, fromDateTimeLocalValue } from "@/lib/tz";
 import { deleteUploads } from "@/lib/uploads";
-import { closeTradeSchema, tradeSchema, type TradeInput } from "@/lib/validation";
+import { closeTradeSchema, tradeFilterSchema, tradeSchema, type TradeInput } from "@/lib/validation";
 
 type TradeWrite = Omit<Prisma.TradeUncheckedCreateInput, "userId" | "id" | "createdAt" | "updatedAt" | "importHash">;
 
@@ -377,6 +378,35 @@ export async function deleteTradeAction(tradeId: string): Promise<void> {
   await deleteUploads(user.id, trade.attachments.map((a) => a.storedName));
   revalidateTradeViews(tradeId);
   redirect("/trades");
+}
+
+/**
+ * Bulk delete from the trades list: the ticked rows, or every trade matching
+ * the current filter when the owner chose "all matching". Screenshots and rule
+ * events go with the trades. Returns to the list with the count.
+ */
+export async function deleteTradesAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const returnTo = safeRedirectPath(String(formData.get("returnTo") ?? ""), "/trades");
+  let where: Prisma.TradeWhereInput;
+  if (formData.get("scope") === "filter") {
+    const raw: Record<string, string> = {};
+    for (const [key, value] of formData.entries()) if (key.startsWith("f_") && typeof value === "string") raw[key.slice(2)] = value;
+    const filters = tradeFilterSchema.safeParse(raw);
+    where = buildTradeWhere(user.id, filters.success ? filters.data : {}, user.timeZone);
+  } else {
+    const ids = formData
+      .getAll("ids")
+      .filter((v): v is string => typeof v === "string" && /^[a-z0-9]{1,64}$/i.test(v))
+      .slice(0, 1000);
+    if (ids.length === 0) redirect(returnTo);
+    where = { userId: user.id, id: { in: ids } };
+  }
+  const attachments = await db.attachment.findMany({ where: { trade: where }, select: { storedName: true } });
+  const result = await db.trade.deleteMany({ where });
+  await deleteUploads(user.id, attachments.map((a) => a.storedName));
+  revalidateTradeViews();
+  redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}deleted=${result.count}`);
 }
 
 export async function deleteAttachmentAction(attachmentId: string): Promise<void> {

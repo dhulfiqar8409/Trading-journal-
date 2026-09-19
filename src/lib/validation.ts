@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Decimal } from "@/lib/decimal";
 import { ASSET_CLASSES, IMPORT_FIELDS } from "@/lib/csv";
+import { EXECUTION_FIELDS } from "@/lib/fills";
 import { OPTION_TYPES } from "@/lib/options";
 import { RULE_KIND_INFO, RULE_KINDS } from "@/lib/rules";
 import { isValidTimeZone } from "@/lib/tz";
@@ -249,15 +250,42 @@ export const tradeFilterSchema = z.object({
 });
 export type TradeFilterInput = z.infer<typeof tradeFilterSchema>;
 
-export const importRequestSchema = z.object({
-  accountId: z.string().min(1),
-  mapping: z.partialRecord(z.enum(IMPORT_FIELDS), z.string().max(200)),
-  options: z.object({
-    defaultAssetClass: z.enum(ASSET_CLASSES).optional(),
-    defaultMultiplier: z.string().trim().max(32).optional(),
-    dayFirst: z.boolean().optional(),
-    timeZone: z.preprocess(emptyToUndefined, timeZoneSchema.optional()),
-  }),
-  rows: z.array(z.record(z.string().max(200), z.string().max(5000))).max(10000, "At most 10,000 rows per import"),
+export const IMPORT_MODES = ["trades", "executions"] as const;
+export type ImportModeKey = (typeof IMPORT_MODES)[number];
+
+const importOptionsSchema = z.object({
+  defaultAssetClass: z.enum(ASSET_CLASSES).optional(),
+  defaultMultiplier: z.string().trim().max(32).optional(),
+  dayFirst: z.boolean().optional(),
+  timeZone: z.preprocess(emptyToUndefined, timeZoneSchema.optional()),
+  /** Saved with presets so applying one restores the mode as well. */
+  mode: z.enum(IMPORT_MODES).optional(),
 });
+const importRowsSchema = z.array(z.record(z.string().max(200), z.string().max(5000))).max(10000, "At most 10,000 rows per import");
+const importFilename = z.preprocess(emptyToUndefined, z.string().trim().max(200).optional());
+
+/** One row per trade, or one row per execution matched into trades on the server. A request without a mode is a trades import. */
+export const importRequestSchema = z.preprocess(
+  (v) => (v && typeof v === "object" && !("mode" in v) ? { ...v, mode: "trades" } : v),
+  z.discriminatedUnion("mode", [
+    z.object({
+      mode: z.literal("trades"),
+      accountId: z.string().min(1),
+      mapping: z.partialRecord(z.enum(IMPORT_FIELDS), z.string().max(200)),
+      options: importOptionsSchema,
+      rows: importRowsSchema,
+      filename: importFilename,
+    }),
+    z.object({
+      mode: z.literal("executions"),
+      accountId: z.string().min(1),
+      mapping: z.partialRecord(z.enum(EXECUTION_FIELDS), z.string().max(200)),
+      options: importOptionsSchema,
+      rows: importRowsSchema,
+      filename: importFilename,
+      /** Rows of unmatched closes the owner chose to import as closed trades with an unknown entry. */
+      includeUnmatched: z.array(z.number().int().min(1).max(100000)).max(10000).optional(),
+    }),
+  ]),
+);
 export type ImportRequest = z.infer<typeof importRequestSchema>;

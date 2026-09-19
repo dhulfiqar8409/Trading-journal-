@@ -12,6 +12,12 @@ export interface ImportIdentity {
   strikePrice?: DecimalInput | null;
   /** "YYYY-MM-DD" */
   expiration?: string | null;
+  /**
+   * Execution imports only: the parts of a split position share every entry
+   * detail, so the closed part is told apart by its exit (the open remainder
+   * has none). Trade-row imports leave it out so older hashes still match.
+   */
+  exitAt?: Date | null;
 }
 
 /** Canonical string identifying a trade for de-duplication (safe to compute in the browser). */
@@ -26,5 +32,6 @@ export function importHashKey(identity: ImportIdentity): string {
   if (identity.optionType && identity.strikePrice !== null && identity.strikePrice !== undefined && identity.expiration) {
     parts.push(identity.optionType, toDecimal(identity.strikePrice).toFixed(), identity.expiration);
   }
+  if (identity.exitAt) parts.push(`exit:${identity.exitAt.toISOString()}`);
   return parts.join("|");
 }

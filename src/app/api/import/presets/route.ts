@@ -3,18 +3,22 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { IMPORT_FIELDS } from "@/lib/csv";
 import { db } from "@/lib/db";
+import { EXECUTION_FIELDS } from "@/lib/fills";
 import { requireSameOrigin } from "@/lib/origin-guard";
+import { IMPORT_MODES } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
+/** A mapping for either import mode; the mode itself travels in the options. */
 const presetSchema = z.object({
   name: z.string().trim().min(1).max(60),
-  mapping: z.partialRecord(z.enum(IMPORT_FIELDS), z.string().max(200)),
+  mapping: z.partialRecord(z.enum([...IMPORT_FIELDS, ...EXECUTION_FIELDS]), z.string().max(200)),
   options: z.object({
     defaultAssetClass: z.string().max(20).optional(),
     defaultMultiplier: z.string().max(32).optional(),
     dayFirst: z.boolean().optional(),
     timeZone: z.string().max(64).optional(),
+    mode: z.enum(IMPORT_MODES).optional(),
   }),
 });
 

@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { isoWeekKeyOfDateKey } from "../src/lib/weeks";
@@ -37,6 +37,9 @@ const closeSymbol = `${manualSymbol}C`;
 const optionSymbol = `OPT${stamp}`;
 const mobileSymbol = `${manualSymbol}M`;
 const yearSuffix = expiryObj.getUTCFullYear() === new Date().getUTCFullYear() ? "" : ` '${String(expiryObj.getUTCFullYear()).slice(-2)}`;
+// A thinkorswim Account Statement whose symbols carry this run's stamp, so the de-duplication cannot collide with an earlier run.
+const tosSymbol = `TOS${stamp}`;
+const tosStatement = readFileSync(path.join(__dirname, "fixtures", "thinkorswim-statement.csv"), "utf8").replace(/\b(AAPL|SPY|TSLA|NVDA|MSFT|QQQ)\b/g, (m) => `${tosSymbol}${m[0]}`);
 const optionLabel = `${optionSymbol} 450C ${MONTHS[expiryObj.getUTCMonth()].slice(0, 3)} ${expiryObj.getUTCDate()}${yearSuffix}`;
 
 let page: Page;
@@ -286,6 +289,77 @@ test("import a small CSV with a duplicate row", async () => {
   await expect(figure("no stop, -$5.50").first()).toBeVisible();
 });
 
+test("bulk delete from the trades list", async () => {
+  await page.goto(`/trades?symbol=${csvSymbol}`);
+  await expect(page.getByText("1–2 of 2")).toBeVisible();
+  await page.getByLabel("Select all on this page").check();
+  await expect(page.getByText("2 selected")).toBeVisible();
+  await shot("31-bulk-select");
+  await page.getByRole("button", { name: "Delete selected" }).click(); // the confirm() is accepted by the dialog handler
+  await page.waitForURL(/deleted=2/);
+  await expect(page.getByRole("status")).toContainText("Deleted 2 trades.");
+  await expect(page.getByText("No trades match these filters.")).toBeVisible();
+});
+
+test("a thinkorswim statement becomes round trips, flags an unmatched close, and the import can be undone", async () => {
+  await page.goto("/import");
+  await page.setInputFiles("input[type=file]", { name: "statement.csv", mimeType: "text/csv", buffer: Buffer.from(tosStatement) });
+  await expect(page.getByRole("status").filter({ hasText: "thinkorswim Account Statement detected" })).toBeVisible();
+  await expect(page.getByLabel(/An execution/)).toBeChecked();
+  await expect(page.locator("#map-posEffect")).toHaveValue("Pos Effect");
+  await expect(page.locator("#map-time")).toHaveValue("Exec Time");
+  const summary = page.getByTestId("match-summary");
+  await expect(summary).toContainText("11 fills → 7 trades (3 closed, 4 open)");
+  await expect(summary).toContainText("1 unmatched close");
+  const unmatched = page.locator("section[aria-label='Unmatched closes']");
+  await expect(unmatched).toContainText(`${tosSymbol}N`);
+  await expect(unmatched).toContainText("wider date range");
+  const matched = page.locator("table[aria-label='Matched trades']");
+  await expect(matched.getByRole("row").filter({ hasText: `${tosSymbol}A` })).toContainText("+$250.00");
+  await expect(matched.getByRole("row").filter({ hasText: `${tosSymbol}S 450C` })).toContainText("+$120.00");
+  await expect(matched.getByRole("row").filter({ hasText: `${tosSymbol}Q 470P` })).toContainText("OPEN");
+  await shot("32-thinkorswim-preview");
+
+  // The unmatched close can be brought in as a closed trade with an unknown entry.
+  await unmatched.getByLabel("Import as a closed trade with an unknown entry").check();
+  await page.getByRole("button", { name: "Import 8 trades" }).click();
+  const report = page.getByRole("status").filter({ hasText: "Import finished" });
+  await expect(report.locator("li").nth(0)).toContainText("8");
+  await expect(report.locator("li").nth(1)).toContainText("0");
+
+  await page.goto(`/trades?symbol=${tosSymbol}`);
+  await expect(page.getByText("1–8 of 8")).toBeVisible();
+  await page.goto(`/trades?symbol=${tosSymbol}A`);
+  await expect(figure("no stop, +$250.00").first()).toBeVisible();
+  await page.goto(`/trades?symbol=${tosSymbol}T`);
+  await expect(page.getByText("1–2 of 2")).toBeVisible(); // 100 closed, 100 still open
+  await expect(page.locator("table").getByText("Open", { exact: true })).toBeVisible();
+  await page.goto(`/trades?symbol=${tosSymbol}N`);
+  await page.getByRole("link", { name: `${tosSymbol}N`, exact: true }).click();
+  await page.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await expect(page.locator("p", { hasText: /Entry unknown/ })).toBeVisible();
+
+  // The same statement again adds nothing.
+  await page.goto("/import");
+  await page.setInputFiles("input[type=file]", { name: "statement.csv", mimeType: "text/csv", buffer: Buffer.from(tosStatement) });
+  await page.getByRole("button", { name: "Import 7 trades" }).click();
+  const again = page.getByRole("status").filter({ hasText: "Import finished" });
+  await expect(again.locator("li").nth(0)).toContainText("0");
+  await expect(again.locator("li").nth(1)).toContainText("7");
+  await expect(again).toContainText("1 unmatched close left out");
+
+  // Undoing the first import removes its eight trades; the second import created none.
+  const history = page.locator("section[aria-label='Import history']");
+  await expect(history).toContainText("8 inserted");
+  const batch = history.getByRole("listitem").filter({ hasText: "8 inserted" });
+  await expect(batch).toContainText("8 still in the journal");
+  await shot("33-import-history");
+  await batch.getByRole("button", { name: "Undo import" }).click();
+  await expect(history.getByRole("listitem").filter({ hasText: "8 inserted" })).toHaveCount(0);
+  await page.goto(`/trades?symbol=${tosSymbol}`);
+  await expect(page.getByText("No trades match these filters.")).toBeVisible();
+});
+
 test("phone-width layout has no horizontal scroll", async () => {
   await page.setViewportSize({ width: 390, height: 844 });
   for (const [name, url] of [
@@ -296,6 +370,7 @@ test("phone-width layout has no horizontal scroll", async () => {
     ["18-mobile-reports", "/reports"],
     ["22-mobile-week", `/reports/week/${isoWeekKeyOfDateKey(tradeDate)}`],
     ["24-mobile-admin-users", "/admin/users"],
+    ["34-mobile-import", "/import"],
   ] as const) {
     await page.goto(url);
     await expect(page.locator("nav[aria-label='Main']").last()).toBeVisible();
@@ -319,6 +394,7 @@ test("phone-width layout has no horizontal scroll", async () => {
   // The close sheet at phone width: opened from a card, nothing overflows, and it closes the trade.
   await page.goto("/trades/new");
   await page.fill("#symbol", mobileSymbol);
+  await page.selectOption("#assetClass", "STOCK"); // the form prefills the last trade's asset class, which may be an option
   await page.fill("#quantity", "10");
   await page.fill("#entryPrice", "20");
   await page.fill("#entryAt", `${closeDate}T12:00`);
@@ -378,7 +454,7 @@ test("a rule-breaking trade needs a justification and lands in the ledger", asyn
   // Remove stale rules left behind by interrupted runs so exactly one rule breaks.
   const stale = page.locator("li", { hasText: /Stop required [A-Z0-9]+/ });
   while ((await stale.count()) > 0) {
-    await stale.first().getByRole("button", { name: "Delete" }).click();
+    await stale.first().getByRole("button", { name: "Delete", exact: true }).click();
     await page.waitForTimeout(500);
   }
   await page.selectOption("#new-kind", "STOP_REQUIRED");
@@ -389,6 +465,7 @@ test("a rule-breaking trade needs a justification and lands in the ledger", asyn
   await page.goto("/trades/new");
   await expect(page.locator("section[aria-label='Plan budget']")).toBeVisible();
   await page.fill("#symbol", `${manualSymbol}X`);
+  await page.selectOption("#assetClass", "STOCK");
   await page.fill("#quantity", "10");
   await page.fill("#entryPrice", "50");
   await page.fill("#entryAt", `${tradeDate}T11:00`);
@@ -424,7 +501,7 @@ test("a rule-breaking trade needs a justification and lands in the ledger", asyn
   // Pause the rule so later runs and the cleanup are not affected by it.
   await page.goto("/rules");
   const row = page.locator("li", { hasText: `Stop required ${stamp}` });
-  await row.getByRole("button", { name: "Delete" }).click();
+  await row.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(row).toHaveCount(0);
 });
 
@@ -556,7 +633,7 @@ test("admin creates a user who must replace the temporary password and then sees
   while ((await page.getByRole("listitem", { name: /^@e2e-/ }).count()) > 0) {
     const leftover = page.getByRole("listitem", { name: /^@e2e-/ }).first();
     const label = (await leftover.getAttribute("aria-label")) ?? "";
-    await leftover.getByRole("button", { name: "Delete" }).click();
+    await leftover.getByRole("button", { name: "Delete", exact: true }).click();
     await expect(page.getByRole("listitem", { name: label })).toHaveCount(0);
   }
   await page.fill("#nu-username", newUser);
@@ -609,6 +686,23 @@ test("admin creates a user who must replace the temporary password and then sees
   await expect(them.getByRole("link", { name: "Manage users" })).toHaveCount(0);
   await them.screenshot({ path: path.join(shotsDir, "26-user-settings.png"), fullPage: true });
 
+  // They log a trade; the admin wipes their trades after typing the username, and the journal is empty again.
+  await them.goto("/trades/new");
+  await them.fill("#symbol", `USR${stamp}`);
+  await them.fill("#quantity", "5");
+  await them.fill("#entryPrice", "10");
+  await them.fill("#entryAt", `${closeDate}T13:00`);
+  await them.getByRole("button", { name: "Save trade" }).click();
+  await them.waitForURL(/\/trades\/(?!new$)[a-z0-9]+$/);
+  await page.reload();
+  await expect(card).toContainText("Trades");
+  await card.getByRole("button", { name: "Delete all trades (1)" }).click();
+  await card.getByLabel(/^Type .* to delete/).fill(newUser);
+  await card.getByRole("button", { name: "Delete all trades", exact: true }).click();
+  await expect(card.getByRole("status")).toContainText(`1 trade of @${newUser} removed`);
+  await them.goto("/trades");
+  await expect(them.getByText("No trades yet")).toBeVisible();
+
   // The temporary password no longer works and the chosen one does.
   await them.goto("/settings");
   await them.getByRole("button", { name: "Log out" }).first().click();
@@ -634,7 +728,7 @@ test("admin creates a user who must replace the temporary password and then sees
   await them.getByRole("button", { name: "Sign in" }).click();
   await expect(them.locator("form p[role='alert']")).toContainText("deactivated");
   await other.close();
-  await card.getByRole("button", { name: "Delete" }).click();
+  await card.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(page.getByRole("listitem", { name: `@${newUser}` })).toHaveCount(0);
   await expect(page.getByRole("listitem", { name: `@${username}` })).toBeVisible();
 });

@@ -43,6 +43,12 @@ interface with green and red reserved for the sign of P&L.
   from the phone's share sheet into a draft trade.
 - **Sharing and ownership**: revocable read-only links for a trade or a week, saved CSV import
   mappings per broker, and full exports as JSON and CSV.
+- **Imports that match the broker**: a CSV can hold one row per trade or one row per execution;
+  fills are matched into round trips per contract, a thinkorswim Account Statement is recognised
+  and only its Account Trade History is read, and importing the same file twice adds nothing.
+- **Cleaning up**: every import is a batch that can be undone from the Import page, the trades
+  list has checkboxes with "Delete selected" (a page or the whole filter), and an admin can wipe
+  one account's trades after typing the username.
 - **Accounts**: the first visit to `/setup` creates the admin account; there is no self-enrollment.
   The admin creates users under `/admin/users` with a temporary password shown once, resets
   passwords, deactivates, reactivates and deletes accounts. Users sign in by username, must
@@ -116,6 +122,44 @@ All variables are documented in [`.env.example`](.env.example).
 | `POSTGRES_PASSWORD` | compose | Password of the `darkpools` database role created by the `db` service and used to build the app's `DATABASE_URL`. |
 | `APP_PORT` | compose | Host port (bound to 127.0.0.1) that docker compose publishes the app on. Defaults to 3300. |
 | `SEED_USERNAME`, `SEED_EMAIL`, `SEED_PASSWORD` | seed only | Credentials of the demo admin created by `npm run seed` (the username defaults to the email's local part). |
+
+### Importing executions
+
+Broker statements often list fills rather than trades. The Import page has two modes. "A trade"
+expects entry and exit on one row, as before. "An execution" expects one row per fill with side
+(BUY/SELL, or a signed quantity), quantity, an optional position effect (TO OPEN / TO CLOSE),
+price, time, symbol, and for options expiration, strike and type, plus optional fees and spread
+columns; the mapping UI auto-detects them. Fills are matched per contract (symbol, expiration,
+strike, type) in time order: opens build a position with a quantity-weighted average entry (a
+BUY opens long, a SELL opens short), closes take from it and become a closed trade with the
+weighted average exit of that burst of fills, the entry time of the first open and the exit time
+of the last close, fees summed from the fees column and the entry fees split like a partial
+close. A close beyond the open quantity, or one with no open in the file, is an *unmatched
+close*: the preview explains that the position was opened before the statement window and
+suggests exporting a wider range; such closes are skipped unless ticked, in which case they
+become closed trades whose entry is copied from the exit and marked unknown in the notes. Legs
+of a multi-leg spread are separate trades with the spread kind in the notes. Without a position
+effect column the effect is inferred from the running position (a sell while long closes, a sell
+while flat opens short). Close fills of one exit more than two minutes apart count as separate
+partial closes. The matched trades use the same de-duplication key as a trade import, so
+re-importing a statement adds nothing.
+
+A thinkorswim (Schwab) Account Statement is recognised by its "Account Trade History" section:
+only that section is parsed (leading empty column, `9/17/26 09:31:05` times read in your zone,
+`20 SEP 26` expirations, legs of a spread taking the first leg's time), everything else in the
+file is ignored, and the executions mode is selected automatically.
+
+### Cleaning up
+
+Every import creates a batch (file name, mode, inserted, skipped and error counts). The Import
+page lists the last 25 under "Import history" with "Undo import", which deletes the trades that
+batch created together with their screenshots and rule events, after a confirmation that states
+the count. The trades list has a checkbox on every row and card, "Select all on this page", and
+when the filter spans more pages "Select all N matching this filter"; "Delete selected" confirms
+with the number of trades. On `/admin/users` an admin can delete all trades of one account
+(checked server-side for the admin role): the username has to be typed to confirm, and the
+account's screenshots, files and import history go with the trades while its days, rules and
+tags stay.
 
 ### Closing trades and options
 

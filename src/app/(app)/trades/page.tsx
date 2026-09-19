@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BulkActions } from "@/components/bulk-actions";
 import { CloseTrade } from "@/components/close-trade";
 import { Pagination } from "@/components/pagination";
 import { PnlFigure } from "@/components/figure";
@@ -38,7 +39,10 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
   const trades = result.trades.map(serializeTrade);
   const sort = filters.sort ?? "entryAt";
   const dir = filters.dir ?? "desc";
-  const hasFilters = Object.entries(raw).some(([k, v]) => v && !["page", "sort", "dir", "pageSize"].includes(k));
+  const hasFilters = Object.entries(raw).some(([k, v]) => v && !["page", "sort", "dir", "pageSize", "deleted"].includes(k));
+  const deleted = raw.deleted && /^\d+$/.test(raw.deleted) ? Number(raw.deleted) : null;
+  const filterParams = Object.fromEntries(Object.entries(raw).filter(([k, v]) => v && !["page", "sort", "dir", "pageSize", "deleted"].includes(k)));
+  const returnTo = `/trades${withParams(raw, { deleted: null })}`;
 
   const sortHref = (key: (typeof TRADE_SORT_KEYS)[number]) =>
     withParams(raw, { sort: key, dir: sort === key && dir === "desc" ? "asc" : "desc", page: null });
@@ -137,16 +141,26 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
         </div>
       </form>
 
+      {deleted !== null ? (
+        <p role="status" className="rounded-lg border border-profit-mark/40 bg-profit-soft px-3 py-2 text-sm text-profit">
+          Deleted {deleted} trade{deleted === 1 ? "" : "s"}.
+        </p>
+      ) : null}
+
       {trades.length === 0 ? (
         <div className="card card-pad text-center text-sm text-muted">
           {hasFilters ? "No trades match these filters." : "No trades yet. Add one or import a CSV."}
         </div>
       ) : (
         <>
+          <BulkActions visible={trades.length} total={result.total} filters={filterParams} returnTo={returnTo} />
           <div className="card hidden overflow-hidden md:block">
             <table className="table">
               <thead>
                 <tr>
+                  <th>
+                    <span className="sr-only">Select</span>
+                  </th>
                   <th>{sortLabel("entryAt")}</th>
                   <th>{sortLabel("symbol")}</th>
                   <th>Side</th>
@@ -162,6 +176,9 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
               <tbody>
                 {trades.map((t) => (
                   <tr key={t.id} className="hover:bg-surface-2">
+                    <td>
+                      <input type="checkbox" name="ids" value={t.id} form="bulk-delete" aria-label={`Select ${tradeLabel(t)}`} />
+                    </td>
                     <td className="num whitespace-nowrap text-ink-2">{formatDateTime(t.entryAt, user.timeZone)}</td>
                     <td>
                       <Link href={`/trades/${t.id}`} className="font-semibold text-ink hover:text-accent-strong">
@@ -227,11 +244,12 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
                     </div>
                   ) : null}
                 </Link>
-                {t.status === "OPEN" ? (
-                  <div className="flex items-center justify-end border-t border-line px-3 py-2">
-                    <CloseTrade trade={closeTarget(t, tradeLabel(t))} timeZone={user.timeZone} />
-                  </div>
-                ) : null}
+                <div className="flex items-center justify-between border-t border-line px-3 py-2">
+                  <label className="flex items-center gap-2 text-xs text-muted">
+                    <input type="checkbox" name="ids" value={t.id} form="bulk-delete" aria-label={`Select ${tradeLabel(t)}`} /> Select
+                  </label>
+                  {t.status === "OPEN" ? <CloseTrade trade={closeTarget(t, tradeLabel(t))} timeZone={user.timeZone} /> : null}
+                </div>
               </li>
             ))}
           </ul>

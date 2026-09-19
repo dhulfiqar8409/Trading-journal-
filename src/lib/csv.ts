@@ -116,15 +116,18 @@ const SYNONYMS: Record<ImportField, string[]> = {
   notes: ["notes", "note", "comment", "comments", "description", "remarks", "journal", "memo"],
 };
 
-/** Guess which CSV header feeds each import field. Each header is used at most once. */
-export function guessMapping(headers: string[]): ColumnMapping {
-  const mapping: ColumnMapping = {};
+/**
+ * Guess which CSV header feeds each field, for any field set with its own
+ * synonyms: exact matches first in field priority order, then substring
+ * matches for what is still unmapped (e.g. "entry_price_usd"). Each header is
+ * used at most once.
+ */
+export function guessMappingFor<F extends string>(headers: string[], fields: readonly F[], synonyms: Record<F, string[]>): Partial<Record<F, string>> {
+  const mapping: Partial<Record<F, string>> = {};
   const used = new Set<string>();
   const normalized = headers.map((h) => ({ header: h, norm: normalizeHeader(h) }));
-
-  // Exact synonym matches first, in field priority order.
-  for (const field of IMPORT_FIELDS) {
-    for (const synonym of SYNONYMS[field]) {
+  for (const field of fields) {
+    for (const synonym of synonyms[field]) {
       const hit = normalized.find((h) => h.norm === synonym && !used.has(h.header));
       if (hit) {
         mapping[field] = hit.header;
@@ -133,10 +136,9 @@ export function guessMapping(headers: string[]): ColumnMapping {
       }
     }
   }
-  // Then substring matches for whatever is still unmapped (e.g. "entry_price_usd").
-  for (const field of IMPORT_FIELDS) {
+  for (const field of fields) {
     if (mapping[field]) continue;
-    for (const synonym of SYNONYMS[field]) {
+    for (const synonym of synonyms[field]) {
       if (synonym.length < 4) continue;
       const hit = normalized.find((h) => h.norm.includes(synonym) && !used.has(h.header));
       if (hit) {
@@ -147,6 +149,11 @@ export function guessMapping(headers: string[]): ColumnMapping {
     }
   }
   return mapping;
+}
+
+/** Guess which CSV header feeds each import field (one row per trade). */
+export function guessMapping(headers: string[]): ColumnMapping {
+  return guessMappingFor(headers, IMPORT_FIELDS, SYNONYMS);
 }
 
 export function parseSide(raw: string): Side | null {

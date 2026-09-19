@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { createUserAction, deleteUserAction, resetPasswordAction, setActiveAction, setRoleAction } from "@/actions/admin";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { createUserAction, deleteUserAction, deleteUserTradesAction, resetPasswordAction, setActiveAction, setRoleAction } from "@/actions/admin";
 import { ConfirmSubmit } from "@/components/confirm-button";
 import { CopyField } from "@/components/copy-field";
 import { FieldError, FormMessage, SubmitButton, fieldClass, useActionForm } from "@/components/forms";
@@ -169,6 +170,65 @@ function ResetPasswordForm({ user }: { user: AdminUserDTO }) {
   );
 }
 
+/** Wipes one account's trades; the admin types the username before it goes through. */
+function DeleteTradesForm({ user }: { user: AdminUserDTO }) {
+  const router = useRouter();
+  const { state, onSubmit, pending } = useActionForm(deleteUserTradesAction);
+  const [open, setOpen] = useState(false);
+  // A success closes the form (derived during render) and refreshes the counts on the page.
+  const [tracked, setTracked] = useState<ActionState>(null);
+  if (tracked !== state) {
+    setTracked(state);
+    if (state?.ok) setOpen(false);
+  }
+  useEffect(() => {
+    if (state?.ok) router.refresh();
+  }, [state, router]);
+  return (
+    <div className="flex flex-col gap-2">
+      {open ? (
+        <form onSubmit={onSubmit} className="flex flex-col gap-2 rounded-lg border border-loss-mark/40 bg-loss-soft p-3">
+          <input type="hidden" name="userId" value={user.id} />
+          <div>
+            <label htmlFor={`dt-${user.id}`} className="label">
+              Type {user.username} to delete {user.tradeCount === 1 ? "their 1 trade" : `all ${user.tradeCount} trades`}
+            </label>
+            <input
+              id={`dt-${user.id}`}
+              name="confirmUsername"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              placeholder={user.username}
+              className={fieldClass(state, "confirmUsername")}
+            />
+            <p className="hint">Screenshots, rule events and import history go with the trades; days, rules, tags and the account stay.</p>
+            <FieldError state={state} name="confirmUsername" />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <SubmitButton className="btn btn-sm btn-danger" pendingText="Deleting…" pending={pending}>
+              Delete all trades
+            </SubmitButton>
+            <button type="button" className="btn btn-sm" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </div>
+          <FormMessage state={state} />
+        </form>
+      ) : (
+        <button type="button" className="btn btn-sm btn-danger" onClick={() => setOpen(true)}>
+          Delete all trades ({user.tradeCount})
+        </button>
+      )}
+      {!open && state?.ok && state.message ? (
+        <p role="status" className="text-xs text-profit">
+          {state.message}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function SimpleAction({
   action,
   fields,
@@ -247,10 +307,14 @@ function UserCard({ user, isSelf }: { user: AdminUserDTO; isSelf: boolean }) {
         </div>
       </dl>
       {isSelf ? (
-        <p className="text-xs text-muted">Your own password and profile live in Settings. Another admin can change this account.</p>
+        <div className="flex flex-col gap-2 border-t border-line pt-3">
+          <p className="text-xs text-muted">Your own password and profile live in Settings. Another admin can change this account.</p>
+          <DeleteTradesForm user={user} />
+        </div>
       ) : (
         <div className="flex flex-col gap-2 border-t border-line pt-3">
           <ResetPasswordForm user={user} />
+          <DeleteTradesForm user={user} />
           <div className="flex flex-wrap items-center gap-2">
             <SimpleAction
               action={setActiveAction}

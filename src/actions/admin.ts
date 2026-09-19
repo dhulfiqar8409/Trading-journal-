@@ -6,8 +6,8 @@ import { requireAdmin } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { failure, formToObject, success, zodErrorToResult, type ActionState } from "@/lib/form";
 import { hashPassword } from "@/lib/password";
-import { deleteUserUploads } from "@/lib/uploads";
-import { accountChangeError, generateTemporaryPassword, type AccountChange } from "@/lib/users";
+import { deleteUploads, deleteUserUploads } from "@/lib/uploads";
+import { accountChangeError, generateTemporaryPassword, normalizeUsername, type AccountChange } from "@/lib/users";
 import { adminCreateUserSchema, adminResetPasswordSchema } from "@/lib/validation";
 import { USER_ROLES } from "@/lib/validation";
 
@@ -144,6 +144,28 @@ export async function setRoleAction(_prev: ActionState, formData: FormData): Pro
 async function plainTarget(tx: AccountTx, userId: string): Promise<Guarded> {
   const target = await tx.user.findUnique({ where: { id: userId }, select: TARGET_SELECT });
   return target ? { ok: true, target } : { ok: false, error: "That account no longer exists." };
+}
+
+/**
+ * Wipes one account's trades (with their screenshots, files, rule events and
+ * import history) and nothing else: days, rules, tags and the account stay.
+ * The admin types the username to confirm.
+ */
+export async function deleteUserTradesAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  await requireAdmin();
+  const userId = userIdFrom(formData);
+  if (!userId) return failure("Missing account.");
+  const target = await db.user.findUnique({ where: { id: userId }, select: { id: true, username: true } });
+  if (!target) return failure("That account no longer exists.");
+  const typed = normalizeUsername(String(formData.get("confirmUsername") ?? ""));
+  if (typed !== target.username) return failure(`Type ${target.username} exactly to confirm.`, { confirmUsername: "Does not match the username" });
+  const attachments = await db.attachment.findMany({ where: { trade: { userId: target.id } }, select: { storedName: true } });
+  const [deleted] = await db.$transaction([db.trade.deleteMany({ where: { userId: target.id } }), db.importBatch.deleteMany({ where: { userId: target.id } })]);
+  await deleteUploads(target.id, attachments.map((a) => a.storedName));
+  revalidatePath(USERS_PATH);
+  revalidatePath("/");
+  revalidatePath("/trades");
+  return success(`${deleted.count} trade${deleted.count === 1 ? "" : "s"} of @${target.username} removed. Days, rules and tags stay.`);
 }
 
 /** Removes the account with everything it logged: trades, days, rules, tags, links, presets and screenshot files. */

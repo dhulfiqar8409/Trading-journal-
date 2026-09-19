@@ -52,7 +52,22 @@ Guiding rules:
 - **Tags**: strategy, setup, mistake and custom kinds with colours.
 - **Accounts**: several broker accounts with their own currency; one is the default.
 - **CSV import**: header auto-detection, a column mapping step, a preview with per-row errors, and
-  de-duplication by a hash of symbol, side, quantity, entry price and entry time.
+  de-duplication by a hash of symbol, side, quantity, entry price and entry time. Two modes: one
+  row per trade, or one row per execution (fills). Fills are matched per contract in time order
+  into round trips by a pure module: opens accumulate a position with a quantity-weighted entry,
+  closes produce a closed trade (weighted average exit, entry from the first open, exit from the
+  last close fill, fees summed, entry fees split like a partial close), the remainder stays open,
+  a partial exit is its own closed trade, spread legs are separate trades with the spread kind in
+  the notes, and a close with no open in the file is listed as unmatched (opened before the
+  statement window) and skipped unless the owner ticks it, which stores it as a closed trade with
+  an unknown entry marked in the notes. The position effect is inferred from the running position
+  when the file has none. A thinkorswim Account Statement is recognised and only its Account
+  Trade History section is read. Each import is an `ImportBatch` (file, mode, counts) that the
+  Import page lists and can undo.
+- **Deleting in bulk**: checkboxes on trade rows and cards with select-all for the page or the
+  whole filter and a "Delete selected" confirmation that states the count; an admin can delete all
+  trades of one account from `/admin/users` after typing the username (trades, screenshots and
+  files go, days stay).
 - **Dashboard**: net result hero, KPI tiles, equity curve, daily bars, calendar heatmap, top
   symbols, results by tag and recent trades over a 7d / 30d / 90d / YTD / all / custom range.
 - **Auth**: username and password, a signed session cookie, a first-run `/setup` page that creates
