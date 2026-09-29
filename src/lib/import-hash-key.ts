@@ -18,6 +18,12 @@ export interface ImportIdentity {
    * has none). Trade-row imports leave it out so older hashes still match.
    */
   exitAt?: Date | null;
+  /**
+   * Execution imports from an order list: the broker's order numbers behind
+   * the trade, so the same export re-imported adds nothing while an order
+   * edited and re-placed at the same price and minute does not collide.
+   */
+  orderIds?: readonly string[] | null;
 }
 
 /** Canonical string identifying a trade for de-duplication (safe to compute in the browser). */
@@ -33,5 +39,6 @@ export function importHashKey(identity: ImportIdentity): string {
     parts.push(identity.optionType, toDecimal(identity.strikePrice).toFixed(), identity.expiration);
   }
   if (identity.exitAt) parts.push(`exit:${identity.exitAt.toISOString()}`);
+  if (identity.orderIds && identity.orderIds.length) parts.push(`orders:${[...new Set(identity.orderIds.map((id) => id.trim()))].sort().join(",")}`);
   return parts.join("|");
 }

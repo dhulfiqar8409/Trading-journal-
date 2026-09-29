@@ -106,8 +106,9 @@ export function normalizeHeader(header: string): string {
 const SYNONYMS: Record<ImportField, string[]> = {
   symbol: ["symbol", "ticker", "instrument", "contract", "underlying", "security", "asset", "sym", "market", "pair", "product", "epic", "name"],
   side: ["side", "direction", "position", "longshort", "buysell", "bs", "ls", "action", "tradetype", "type", "buyorsell", "orderside"],
-  quantity: ["quantity", "qty", "size", "shares", "contracts", "units", "lots", "volume", "positionsize", "filledqty", "amount", "filled", "qtyfilled", "numberofcontracts"],
-  entryPrice: ["entryprice", "entry", "openprice", "avgentry", "averageentry", "avgentryprice", "buyprice", "pricein", "openingprice", "entryavg", "costbasis", "open", "tradeprice", "tprice", "avgprice", "fillprice", "boughtprice", "openlevel", "price"],
+  // A filled quantity beats the order quantity, and a fill, average or execution price beats a plain "Price", which in an order list carries the order type ("Limit $197.93").
+  quantity: ["filledqty", "filledquantity", "qtyfilled", "quantityfilled", "fillqty", "fillquantity", "execqty", "executedqty", "executedquantity", "quantity", "qty", "size", "shares", "contracts", "units", "lots", "volume", "positionsize", "amount", "filled", "numberofcontracts"],
+  entryPrice: ["entryprice", "entry", "openprice", "avgentry", "averageentry", "avgentryprice", "buyprice", "pricein", "openingprice", "entryavg", "costbasis", "open", "filledprice", "fillprice", "avgfillprice", "averagefillprice", "avgprice", "averageprice", "executionprice", "executedprice", "execprice", "tradeprice", "tprice", "boughtprice", "openlevel", "price"],
   exitPrice: ["exitprice", "exit", "closeprice", "avgexit", "averageexit", "avgexitprice", "sellprice", "priceout", "closingprice", "exitavg", "close", "soldprice", "closelevel"],
   entryAt: ["entrydate", "entrytime", "entrydatetime", "entrytimestamp", "opendate", "opentime", "opendatetime", "opened", "dateopened", "openedat", "entryat", "boughttimestamp", "datetime", "timestamp", "date", "time", "tradedate", "opentimestamp", "exectime", "executiontime", "filltime", "boughtat", "opendatetimeutc"],
   exitAt: ["exitdate", "exittime", "exitdatetime", "exittimestamp", "closedate", "closetime", "closedatetime", "closed", "dateclosed", "closedat", "exitat", "soldtimestamp", "closetimestamp", "soldat", "closedatetimeutc"],
@@ -172,7 +173,7 @@ export interface ParsedAction {
 }
 
 /** Letters only, lower case: "Sell to Close" and "SELL_TO_CLOSE" both read as "selltoclose". */
-function letters(raw: string): string {
+export function letters(raw: string): string {
   return raw.trim().toLowerCase().replace(/[^a-z]/g, "");
 }
 
@@ -303,6 +304,38 @@ export function nonTradeAction(raw: string): string | null {
   return NON_TRADE_WORDS.some((word) => v.includes(word)) ? raw.trim() : null;
 }
 
+/** Words that open an order-type cell: "Limit $197.93", "Stop Limit $150.00", "Trailing Stop $2.00", "Market", "MKT". */
+const ORDER_TYPE_WORDS = ["market", "mkt", "limit", "lmt", "stop", "stp", "trailing", "trail"];
+
+/** True when a price cell names an order type ("Limit $197.93", "Market"), as an order list does, rather than a plain fill price. */
+export function namesOrderType(raw: string): boolean {
+  const v = letters(raw);
+  return v !== "" && ORDER_TYPE_WORDS.some((word) => v.startsWith(word));
+}
+
+/** True when the cell carries digits at all; "Market" or "MKT" has no amount and can never be a price. */
+export function hasAmount(raw: string): boolean {
+  return /\d/.test(raw);
+}
+
+/** What an order status says about the row: executed (a fill), partially filled (a fill of what was filled) or unfilled (open, working, cancelled, rejected, expired, replaced). */
+export type OrderStatus = "executed" | "partial" | "unfilled";
+
+/**
+ * Reads an order status cell. Filled, Executed, Complete and Done are
+ * executed; anything with "partial" in it is a partial fill; every other
+ * status (Open, Working, Pending, Cancelled, Canceled, Rejected, Expired,
+ * Replaced, Queued) is unfilled. Null for an empty cell.
+ */
+export function parseOrderStatus(raw: string): OrderStatus | null {
+  const v = letters(raw);
+  if (!v) return null;
+  if (v.includes("partial") || v.includes("partfill")) return "partial";
+  if (["cancel", "reject", "expire", "replace", "pending", "working", "queued"].some((word) => v.includes(word))) return "unfilled";
+  if (v.startsWith("fill") || v.startsWith("exec") || v.startsWith("complete") || v === "done") return "executed";
+  return "unfilled";
+}
+
 /** LONG or SHORT from the side cell of a trade row; a closing execution ("Sell to Close") is not a side of a trade and reads as null. */
 export function parseSide(raw: string): Side | null {
   const action = parseAction(raw);
@@ -327,16 +360,33 @@ export function parseAssetClass(raw: string): AssetClass | null {
   return null;
 }
 
-/** Parse a money/number cell like "$1,234.50", "(12.50)", "-12.5" or "1 234,5" into a canonical decimal string. */
+/**
+ * Parse a money/number cell into a canonical decimal string: "$1,234.50",
+ * "(12.50)", "-12.5", "1 234,5", "100 USD", "+3", ".5". Words before the
+ * amount are dropped, so an order list's "Limit $197.93", "Stop Limit
+ * $150.00", "Trailing Stop $2.00" or "USD 100" read as their amount. When a
+ * cell carries two amounts the first one counts: "Limit $197.93 / Stop
+ * $190.00" is the limit price (the price the order fills at; the stop is
+ * only the trigger), and "5 of 5" or "3/5" is what was filled of what was
+ * ordered. Null for a cell with no amount at all ("Market", "abc", "").
+ */
 export function parseNumber(raw: string): string | null {
   let v = raw.trim();
   if (!v) return null;
   let negative = false;
   if (/^\(.*\)$/.test(v)) {
     negative = true;
-    v = v.slice(1, -1);
+    v = v.slice(1, -1).trim();
   }
-  v = v.replace(/[$€£¥\s]/g, "").replace(/[A-Za-z]+$/, "");
+  // Leading words, joined by spaces, hyphens, colons, slashes or "@": "Stop-Limit $150.00" becomes "$150.00".
+  v = v.replace(/^(?:[A-Za-z]+|@)(?:[\s\-:@/]*(?:[A-Za-z]+|@))*[\s:@]*/, "");
+  // Everything from a second amount or a trailing word on: "/ Stop $190.00", " of 5", " USD".
+  const cut = /\/\s*(?=[^\d\s]|$)|\s+[A-Za-z@]|[A-Za-z]+$/.exec(v);
+  if (cut) v = v.slice(0, cut.index).trim();
+  // "3/5": what was filled of what was ordered. A date such as 09/17/2026 has two slashes and stays invalid.
+  const ofTotal = /^([-+]?\d+(?:[.,]\d+)?)\s*\/\s*\d+(?:[.,]\d+)?$/.exec(v);
+  if (ofTotal) v = ofTotal[1];
+  v = v.replace(/[$€£¥\s]/g, "");
   if (v.startsWith("-")) {
     negative = !negative;
     v = v.slice(1);
@@ -356,35 +406,120 @@ export function parseNumber(raw: string): string | null {
   return (negative ? d.neg() : d).toFixed();
 }
 
-function cell(record: Record<string, string>, mapping: ColumnMapping, field: ImportField): string | null {
+/*
+ * Row errors name the column and the raw cell ("invalid price in column
+ * "Price": "Market"") so a mapping mistake can be seen from the message, and
+ * they share a shape that importErrorHint can group.
+ */
+
+/** "missing price: column "Price" is empty", or "missing price: no column mapped". */
+export function missingCell(what: string, header: string | undefined): string {
+  return header ? `missing ${what}: column "${header}" is empty` : `missing ${what}: no column mapped`;
+}
+
+/** "invalid quantity in column "Qty": "lots"". */
+export function invalidCell(what: string, header: string, raw: string): string {
+  return `invalid ${what} in column "${header}": "${raw}"`;
+}
+
+/** "unrecognised side in column "Side": "hold"". */
+export function unrecognisedCell(what: string, header: string, raw: string): string {
+  return `unrecognised ${what} in column "${header}": "${raw}"`;
+}
+
+/**
+ * The error for a price cell that would not parse: a cell with no amount at
+ * all ("Market") is an order type, so the row has no price and a fill-price
+ * column is needed; anything else is plain invalid.
+ */
+export function priceCellError(what: string, header: string, raw: string): string {
+  if (hasAmount(raw) || !namesOrderType(raw)) return invalidCell(what, header, raw);
+  return `no ${what} in column "${header}": "${raw}" is an order type without an amount, so the row has no ${what}; map a fill-price column (Filled Price, Avg Price, Execution Price) instead`;
+}
+
+const ERROR_KEY_RE = /^(?:missing|invalid|unrecognised|no|zero) ([a-z&/ ]+?)(?::| in columns? ")/;
+
+/**
+ * One line above a long error list when most rows fail the same way: the
+ * likely cause and the fix. `considered` is the number of rows that were
+ * read as fills or trades (skipped rows left out). Null when the errors are
+ * few (under three) or mixed (the most common one under half the rows).
+ */
+export function importErrorHint(errors: readonly { message: string }[], considered: number): string | null {
+  const groups = new Map<string, { count: number; column: string | null }>();
+  for (const { message } of errors) {
+    const m = ERROR_KEY_RE.exec(message);
+    if (!m) continue;
+    const group = groups.get(m[1]) ?? { count: 0, column: /columns? "([^"]+)"/.exec(message)?.[1] ?? null };
+    group.count++;
+    groups.set(m[1], group);
+  }
+  let top: [string, { count: number; column: string | null }] | null = null;
+  for (const entry of groups) if (!top || entry[1].count > top[1].count) top = entry;
+  if (!top || top[1].count < 3 || top[1].count * 2 <= considered) return null;
+  const [what, { count, column }] = top;
+  const share = count >= considered ? "Every row fails" : `${count.toLocaleString()} of ${considered.toLocaleString()} rows fail`;
+  const where = column ? ` (column "${column}")` : "";
+  if (what.includes("price")) {
+    return `${share} on the ${what}${where}. A column that says "Limit $197.93" or "Market" lists orders, not fills: map the fill-price column (Filled Price, Avg Price, Execution Price) as the ${what} and the Status column so only filled orders count, or export the transaction or trade history instead of the order history.`;
+  }
+  if (what.includes("time")) {
+    return `${share} on the ${what}${where}. Check the date format (tick "Day comes first" for 17/09/2026) and that the column holds a date or a date and time; in the executions mode a separate clock column goes under "Time of day".`;
+  }
+  if (what.includes("quantity")) {
+    return `${share} on the ${what}${where}. The column should hold the number filled (100, -2 or "5 of 5"); a filled-quantity column is preferred over the order quantity.`;
+  }
+  if (what.includes("side")) {
+    return `${share} on the ${what}${where}. Map the column that says Buy or Sell ("Buy to Open", BTO, "Bought"), or leave it unmapped and let a signed quantity tell the side.`;
+  }
+  return `${share} on the ${what}${where}: check that column's mapping.`;
+}
+
+/** True for the placeholders brokers put in an empty cell: "-", "--", "—", "N/A". */
+export function isEmptyCell(value: string): boolean {
+  return value === "" || /^(?:-+|—|–|n\/?a)$/i.test(value);
+}
+
+/** The trimmed cell of a mapped field, or null when the field is unmapped or the cell is empty (a lone dash counts as empty). */
+export function mappedCell<F extends string>(record: Record<string, string>, mapping: Partial<Record<F, string>>, field: F): string | null {
   const header = mapping[field];
   if (!header) return null;
   const value = record[header];
   if (value === undefined || value === null) return null;
   const trimmed = String(value).trim();
-  return trimmed === "" ? null : trimmed;
+  return isEmptyCell(trimmed) ? null : trimmed;
+}
+
+/** True for a quantity written as what was filled of what was ordered: "5 of 5", "3/5", "2 of 10 Contracts". */
+export function isFilledOfTotal(raw: string): boolean {
+  return /^[-+]?[\d.,]+\s*(?:of|\/)\s*[\d.,]+/i.test(raw.trim());
+}
+
+function cell(record: Record<string, string>, mapping: ColumnMapping, field: ImportField): string | null {
+  return mappedCell(record, mapping, field);
 }
 
 export function parseImportRow(record: Record<string, string>, mapping: ColumnMapping, options: ImportOptions = {}): RowResult {
   const fail = (error: string): RowResult => ({ ok: false, error });
+  const col = (field: ImportField) => mapping[field];
 
   const symbolRaw = cell(record, mapping, "symbol");
-  if (!symbolRaw) return fail("missing symbol");
+  if (!symbolRaw) return fail(missingCell("symbol", col("symbol")));
   // A symbol that names a contract ("SPY240920C00450000", "SPY 09/20/2024 450 C") becomes an option on the underlying.
   const contract = parseOptionSymbol(symbolRaw);
   const symbol = (contract ? contract.underlying : symbolRaw.toUpperCase()).slice(0, 32);
 
   const quantityRaw = cell(record, mapping, "quantity");
-  if (!quantityRaw) return fail("missing quantity");
+  if (!quantityRaw) return fail(missingCell("quantity", col("quantity")));
   const quantityParsed = parseNumber(quantityRaw);
-  if (quantityParsed === null) return fail(`invalid quantity "${quantityRaw}"`);
+  if (quantityParsed === null) return fail(invalidCell("quantity", col("quantity")!, quantityRaw));
   let quantity = new Decimal(quantityParsed);
 
   let side: Side | null = null;
   const sideRaw = cell(record, mapping, "side");
   if (sideRaw) {
     const action = parseAction(sideRaw);
-    if (!action) return fail(`unrecognised side "${sideRaw}"`);
+    if (!action) return fail(unrecognisedCell("side", col("side")!, sideRaw));
     if (action.effect === "CLOSE") {
       return {
         ok: false,
@@ -396,38 +531,38 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
   }
   if (!side) side = quantity.isNegative() ? "SHORT" : "LONG";
   quantity = quantity.abs();
-  if (quantity.isZero()) return fail("quantity must not be zero");
+  if (quantity.isZero()) return fail(`zero quantity in column "${col("quantity")}": "${quantityRaw}"`);
 
   const entryRaw = cell(record, mapping, "entryPrice");
-  if (!entryRaw) return fail("missing entry price");
+  if (!entryRaw) return fail(missingCell("entry price", col("entryPrice")));
   const entryPrice = parseNumber(entryRaw);
-  if (entryPrice === null) return fail(`invalid entry price "${entryRaw}"`);
+  if (entryPrice === null) return fail(priceCellError("entry price", col("entryPrice")!, entryRaw));
 
   const exitRaw = cell(record, mapping, "exitPrice");
   let exitPrice: string | null = null;
   if (exitRaw) {
     exitPrice = parseNumber(exitRaw);
-    if (exitPrice === null) return fail(`invalid exit price "${exitRaw}"`);
+    if (exitPrice === null) return fail(priceCellError("exit price", col("exitPrice")!, exitRaw));
   }
 
   const dateOptions = { dayFirst: options.dayFirst, timeZone: options.timeZone ?? "UTC" };
   const entryAtRaw = cell(record, mapping, "entryAt");
-  if (!entryAtRaw) return fail("missing entry time");
+  if (!entryAtRaw) return fail(missingCell("entry time", col("entryAt")));
   const entryAt = parseFlexibleDate(entryAtRaw, dateOptions);
-  if (!entryAt) return fail(`invalid entry time "${entryAtRaw}"`);
+  if (!entryAt) return fail(invalidCell("entry time", col("entryAt")!, entryAtRaw));
 
   const exitAtRaw = cell(record, mapping, "exitAt");
   let exitAt: Date | null = null;
   if (exitAtRaw) {
     exitAt = parseFlexibleDate(exitAtRaw, dateOptions);
-    if (!exitAt) return fail(`invalid exit time "${exitAtRaw}"`);
+    if (!exitAt) return fail(invalidCell("exit time", col("exitAt")!, exitAtRaw));
   }
 
   const feesRaw = cell(record, mapping, "fees");
   let fees = "0";
   if (feesRaw) {
     const parsed = parseNumber(feesRaw);
-    if (parsed === null) return fail(`invalid fees "${feesRaw}"`);
+    if (parsed === null) return fail(invalidCell("fees", col("fees")!, feesRaw));
     fees = new Decimal(parsed).abs().toFixed();
   }
 
@@ -438,19 +573,19 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
   const optionTypeRaw = cell(record, mapping, "optionType");
   if (optionTypeRaw) {
     optionType = parseOptionType(optionTypeRaw);
-    if (!optionType) return fail(`unrecognised call/put "${optionTypeRaw}"`);
+    if (!optionType) return fail(unrecognisedCell("call/put", col("optionType")!, optionTypeRaw));
   }
   const strikeRaw = cell(record, mapping, "strikePrice");
   if (strikeRaw) {
     const parsed = parseNumber(strikeRaw);
-    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(`invalid strike "${strikeRaw}"`);
+    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(invalidCell("strike", col("strikePrice")!, strikeRaw));
     strikePrice = parsed;
   }
   const expiresRaw = cell(record, mapping, "expiresAt");
   if (expiresRaw) {
     const parsed = parseFlexibleDate(expiresRaw, { dayFirst: options.dayFirst, timeZone: "UTC" });
     expiresAt = parsed ? expirationInstant(parsed.toISOString().slice(0, 10)) : null;
-    if (!expiresAt) return fail(`invalid expiration "${expiresRaw}"`);
+    if (!expiresAt) return fail(invalidCell("expiration", col("expiresAt")!, expiresRaw));
   }
   const optionRow = optionType !== null || strikePrice !== null || expiresAt !== null;
 
@@ -458,7 +593,7 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
   let multiplier = options.defaultMultiplier && options.defaultMultiplier.trim() !== "" ? options.defaultMultiplier.trim() : "1";
   if (multiplierRaw) {
     const parsed = parseNumber(multiplierRaw);
-    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(`invalid multiplier "${multiplierRaw}"`);
+    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(invalidCell("multiplier", col("multiplier")!, multiplierRaw));
     multiplier = parsed;
   } else if (optionRow) {
     // A contract row without a multiplier of its own is a standard 100-share contract.
@@ -486,16 +621,16 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
     return parsed;
   };
   const stopPrice = parseOptional("stopPrice");
-  if (stopPrice === undefined) return fail(`invalid stop price "${cell(record, mapping, "stopPrice")}"`);
+  if (stopPrice === undefined) return fail(invalidCell("stop price", col("stopPrice")!, cell(record, mapping, "stopPrice") ?? ""));
   const targetPrice = parseOptional("targetPrice");
-  if (targetPrice === undefined) return fail(`invalid target price "${cell(record, mapping, "targetPrice")}"`);
+  if (targetPrice === undefined) return fail(invalidCell("target price", col("targetPrice")!, cell(record, mapping, "targetPrice") ?? ""));
 
   // Files that only carry a P&L column: derive the exit price so the stored
   // figures stay consistent with the P&L formula.
   const pnlRaw = cell(record, mapping, "pnl");
   if (!exitPrice && pnlRaw) {
     const parsedPnl = parseNumber(pnlRaw);
-    if (parsedPnl === null) return fail(`invalid P&L "${pnlRaw}"`);
+    if (parsedPnl === null) return fail(invalidCell("P&L", col("pnl")!, pnlRaw));
     const derived = exitPriceForNetPnl({ side, quantity, entryPrice, multiplier, fees }, parsedPnl);
     if (!derived) return fail("cannot derive exit price from P&L");
     exitPrice = derived.toFixed();
@@ -504,7 +639,7 @@ export function parseImportRow(record: Record<string, string>, mapping: ColumnMa
   const status = exitPrice !== null ? "CLOSED" : "OPEN";
   if (status === "CLOSED" && !exitAt) exitAt = entryAt;
   if (status === "OPEN") exitAt = null;
-  if (exitAt && exitAt.getTime() < entryAt.getTime()) return fail("exit time is before entry time");
+  if (exitAt && exitAt.getTime() < entryAt.getTime()) return fail(`exit time "${exitAtRaw}" in column "${col("exitAt")}" is before the entry time "${entryAtRaw}"`);
 
   const pnlInput = { side, quantity, entryPrice, exitPrice, multiplier, fees, stopPrice };
   const pnl = netPnl(pnlInput);

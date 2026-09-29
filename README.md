@@ -47,7 +47,9 @@ interface with green and red reserved for the sign of P&L.
   fills are matched into round trips per contract, a thinkorswim Account Statement is recognised
   and only its Account Trade History is read, the Schwab website's transaction history is
   recognised with its "Buy to Open" / "Sell to Close" phrases, non-trade rows, expirations and
-  assignments, and importing the same file twice adds nothing.
+  assignments, its order status export keeps the filled orders with their fill prices, Eastern
+  times and order numbers, any order list with a Status column skips the orders that never
+  filled, and importing the same file twice adds nothing.
 - **Cleaning up**: every import is a batch that can be undone from the Import page, the trades
   list has checkboxes with "Delete selected" (a page or the whole filter), and an admin can wipe
   one account's trades after typing the username.
@@ -170,6 +172,69 @@ the strike appear as their own Buy or Sell rows and therefore as their own stock
 the option at the strike price instead would show a five-figure loss on a one-lot put). Because
 the rows carry no time of day, a file listed newest first is read from the bottom up so a
 same-day open comes before its close; an ascending file keeps its order.
+
+#### Supported export types
+
+- One row per trade (entry and exit on one row): any spreadsheet or broker export; the mapping
+  is guessed from the headers and can be saved per broker.
+- One row per execution: any fill list with side, quantity, price and time (optional position
+  effect, fees, spread and option columns); "to open" / "to close" phrases in the side column
+  open the executions mode by themselves.
+- thinkorswim Account Statement: only the Account Trade History section is read.
+- Schwab transaction history (Date, Action, Symbol, Description, Quantity, Price, Fees & Comm,
+  Amount).
+- Schwab order status (Symbol, Strategy Name, Name of Security, Status, Action, Quantity|Face
+  Value, Price, Timing, Fill Price, Fill Price is Average, Time and Date(ET), Last Activity
+  Date(ET), Reinvest Capital Gains, Order Number).
+- Order lists of other brokers: a Status column, a fill-price column next to the order's Price,
+  quantities such as "5 of 5", a Date column with a separate Time column.
+
+When a file has both a plain "Price" and a fill, average or execution price column (Filled Price,
+Fill Price, Avg Price, Average Price, Avg Fill Price, Execution Price, Executed Price), the fill
+price is mapped as the price and the plain one as the order price, because an order list's
+"Price" holds the order type and its amount ("Limit $197.93", "Market") rather than what was
+paid. A filled quantity column (Filled Qty, Qty Filled, Exec Qty) is preferred over the order
+quantity in the same way, and an executed or filled time over the time placed.
+
+#### Order lists
+
+An order history or order status export lists every order, not every fill. Read in the
+executions mode with a Status column mapped, only the orders whose status says Filled, Executed,
+Complete or Done become fills; Open, Working, Pending, Cancelled, Canceled, Rejected, Expired and
+Replaced orders are counted and listed as skipped ("N unfilled, cancelled or working orders
+skipped"), not reported as errors. A Partially Filled order is a fill of what was filled when the
+file says how much ("2 of 5", or a filled-quantity column); when it only shows the order quantity
+(Schwab's "Closed partial fill") the row is listed as needing attention and skipped, because the
+transaction history has the filled part. Without a Status column every row is a fill, as before.
+
+Number cells may carry words: "Limit $197.93", "Stop Limit $150.00", "Trailing Stop $2.00" and
+"USD 100" read as their amount, "10 Contracts" and "1,000 Shares" as 10 and 1000, "5 of 5" and
+"3/5" as the 5 and 3 that were filled. When a cell carries two amounts the first one counts:
+"Limit $197.93 / Stop $190.00" is the limit price, the price the order fills at; the stop is
+only the trigger. "Market" has no amount at all, so a row whose only price is "Market" fails with
+`no price in column "Price": "Market" ...` and a pointer to the fill-price column; when most rows
+of a file fail the same way, one hint above the error list names the likely cause and the fix.
+A mapped order-price column stands in for a filled row whose fill price is missing, and the
+preview says which rows took it. Every row error names the column and the raw cell.
+
+A date-only column next to a clock column ("Date" and "Time", "Trade Date" and "Exec Time") is
+combined ("09:31:05", "9:31 AM" and "09:31:05 ET" all work); a clock may also come before its
+date ("6:37 PM 09/28/2026"). A trailing ET, CT, MT or PT (or EST, EDT and the other fixed
+abbreviations) is read as that zone whatever the import's zone setting.
+
+The Schwab order status export is recognised by its header set (it opens with a byte order mark).
+The Fill Price is the price, never the order's limit; "Last Activity Date(ET)" is the fill time,
+because "Time and Date(ET)" is when the order was placed and a limit order may fill minutes
+later; both are US Eastern whatever the account's zone. "Buy to open", "Sell to close", "Sell to
+open", "Buy to cover" and "Sell short" carry the position effect, plain Buy and Sell are settled
+against the running position, "Contracts" rows are option contracts (the symbol names the
+contract), Canceled rows have "-" for the fill price and are skipped, there is no fees column,
+and each trade's identity includes the order numbers behind it, so the same export imported
+twice adds nothing while an order edited and re-placed at the same price and minute does not
+collide with the original. The file is grouped by status and newest first within a group; fills
+that share a minute are read from the bottom up so a same-minute open comes before its close.
+Trades imported from the order status and from the transaction history are different trades to
+the de-duplication, so pick one source per period.
 
 ### Cleaning up
 

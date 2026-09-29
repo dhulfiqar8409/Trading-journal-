@@ -1,29 +1,38 @@
 /**
  * Executions matched into round-trip trades. Brokers such as thinkorswim
  * export one row per fill (BUY +100 TO OPEN, SELL -100 TO CLOSE), not one per
- * trade, and the Schwab website lists "Buy to Open" / "Sell to Close" rows
- * next to dividends, transfers and expirations. This module reads those rows
- * and pairs them per contract, in time order, into the trades the journal
- * stores: opens build a position with a quantity-weighted entry, closes take
- * from it and become closed trades, whatever is left stays open. Pure and
- * browser-safe: the preview runs it in the browser, the import route on the
- * server.
+ * trade, the Schwab website lists "Buy to Open" / "Sell to Close" rows next
+ * to dividends, transfers and expirations, and an order history lists every
+ * order with its status, a "Limit $197.93" order price and a fill price.
+ * This module reads those rows and pairs them per contract, in time order,
+ * into the trades the journal stores: opens build a position with a
+ * quantity-weighted entry, closes take from it and become closed trades,
+ * whatever is left stays open. Pure and browser-safe: the preview runs it in
+ * the browser, the import route on the server.
  */
 import { planClose } from "@/lib/close";
 import {
   guessMappingFor,
+  invalidCell,
+  isFilledOfTotal,
+  mappedCell,
+  missingCell,
   nonTradeAction,
+  normalizeHeader,
   parseAction,
   parseAssetClass,
   parseNumber,
   parseOptionType,
+  parseOrderStatus,
+  priceCellError,
+  unrecognisedCell,
   type ActionSide,
   type AssetClass,
   type ImportOptions,
   type ParsedImportRow,
   type PositionEffect,
 } from "@/lib/csv";
-import { hasTimeOfDay, parseFlexibleDate } from "@/lib/dates";
+import { combineDateAndTime, hasTimeOfDay, parseFlexibleDate } from "@/lib/dates";
 import { Decimal, toDecimal, ZERO } from "@/lib/decimal";
 import { importHashKey } from "@/lib/import-hash-key";
 import { expirationInstant, formatStrike, OPTION_MULTIPLIER, parseOptionSymbol, tradeLabel, type OptionType } from "@/lib/options";
@@ -32,17 +41,21 @@ import { netPnl, type Side } from "@/lib/pnl";
 export type { PositionEffect };
 export type FillSide = ActionSide;
 
-export const EXECUTION_FIELDS = ["symbol", "side", "quantity", "posEffect", "price", "time", "fees", "expiresAt", "strikePrice", "optionType", "spread"] as const;
+export const EXECUTION_FIELDS = ["symbol", "side", "quantity", "posEffect", "price", "orderPrice", "time", "timeOfDay", "status", "orderId", "fees", "expiresAt", "strikePrice", "optionType", "spread"] as const;
 export type ExecutionField = (typeof EXECUTION_FIELDS)[number];
 export type ExecutionMapping = Partial<Record<ExecutionField, string>>;
 
 export const EXECUTION_FIELD_INFO: Record<ExecutionField, { label: string; required: boolean; hint: string }> = {
   symbol: { label: "Symbol", required: true, hint: "Underlying or contract, e.g. AAPL, SPY240920C00450000 or TSLA 09/25/2026 357.50 P" },
   side: { label: "Side", required: false, hint: "BUY or SELL, or a phrase such as Sell to Close, BTO or Expired; a signed quantity can stand in for it" },
-  quantity: { label: "Quantity", required: true, hint: "Shares or contracts of the fill; +100 buys and -100 sells when there is no side column" },
+  quantity: { label: "Quantity", required: true, hint: "Shares or contracts of the fill, also \"5 of 5\"; +100 buys and -100 sells when there is no side column. A filled quantity beats the order quantity" },
   posEffect: { label: "Position effect", required: false, hint: "TO OPEN or TO CLOSE; read from the side phrase or the running position when absent" },
-  price: { label: "Price", required: true, hint: "Fill price" },
-  time: { label: "Time", required: true, hint: "Execution date and time, e.g. 9/17/26 09:31:05, or a date such as 09/17/2026" },
+  price: { label: "Price", required: true, hint: "Fill price. Prefer a fill, average or execution price column over an order price such as Limit $197.93; Market has no amount" },
+  orderPrice: { label: "Order price", required: false, hint: "The order's limit or stop amount (Limit $197.93), used only for a filled row whose fill price is missing" },
+  time: { label: "Time", required: true, hint: "Execution date and time, e.g. 9/17/26 09:31:05 or 6:37 PM 09/28/2026 ET, or a date such as 09/17/2026 with the clock in the time-of-day column" },
+  timeOfDay: { label: "Time of day", required: false, hint: "A clock column next to a date-only column, e.g. 09:31:05, 9:31 AM or 09:31:05 ET; combined with the date" },
+  status: { label: "Status", required: false, hint: "Order status: only Filled, Executed or Partially Filled rows become fills; Open, Working, Cancelled, Rejected and Expired orders are skipped" },
+  orderId: { label: "Order number", required: false, hint: "Order or execution number, made part of each trade's identity so the same export adds nothing twice" },
   fees: { label: "Fees", required: false, hint: "Commission and fees of the fill, summed into the trade" },
   expiresAt: { label: "Expiration", required: false, hint: "Options: expiration date, e.g. 20 SEP 26" },
   strikePrice: { label: "Strike", required: false, hint: "Options: strike price" },
@@ -50,13 +63,52 @@ export const EXECUTION_FIELD_INFO: Record<ExecutionField, { label: string; requi
   spread: { label: "Spread", required: false, hint: "Multi-leg strategy (VERTICAL, CALENDAR, ...), noted on each leg" },
 };
 
+// Within a field the order is the preference: a filled quantity beats the order quantity, a fill, average or execution
+// price beats a plain "Price" (which in an order list carries the order type), and an execution time beats the time placed.
 const EXECUTION_SYNONYMS: Record<ExecutionField, string[]> = {
   symbol: ["symbol", "ticker", "underlying", "instrument", "contract", "security", "sym", "product"],
   side: ["side", "action", "buysell", "bs", "direction", "transaction", "orderside", "buyorsell", "transactiontype"],
-  quantity: ["qty", "quantity", "shares", "contracts", "size", "filledqty", "execqty", "units", "filled", "amount"],
+  quantity: ["filledqty", "filledquantity", "qtyfilled", "quantityfilled", "fillqty", "fillquantity", "execqty", "executedqty", "executedquantity", "qty", "quantity", "shares", "contracts", "size", "units", "filled", "amount"],
   posEffect: ["poseffect", "positioneffect", "openclose", "effect", "opencloseindicator", "opcl", "positioneffectopenclose"],
-  price: ["price", "execprice", "fillprice", "avgprice", "averageprice", "tradeprice", "executionprice", "fill"],
-  time: ["exectime", "executiontime", "time", "datetime", "timestamp", "filltime", "date", "tradedate", "execdate", "executeddate", "transactiondate"],
+  price: ["filledprice", "fillprice", "avgfillprice", "averagefillprice", "avgprice", "averageprice", "executionprice", "executedprice", "execprice", "tradeprice", "price"],
+  orderPrice: ["orderprice", "limitprice", "price"],
+  // A Schwab order status carries the placement time ("Time and Date") and the last activity, which for a filled order is its fill.
+  time: [
+    "exectime",
+    "executiontime",
+    "executedtime",
+    "filltime",
+    "filledtime",
+    "filledat",
+    "executedat",
+    "executed",
+    "lastactivitydateet",
+    "lastactivitydate",
+    "lastactivity",
+    "timeanddateet",
+    "timeanddate",
+    "dateandtimeet",
+    "dateandtime",
+    "datetime",
+    "timestamp",
+    "tradedatetime",
+    "time",
+    "date",
+    "tradedate",
+    "execdate",
+    "executiondate",
+    "executeddate",
+    "filldate",
+    "transactiondate",
+    "orderdate",
+    "placed",
+    "timeplaced",
+    "placedat",
+    "dateplaced",
+  ],
+  timeOfDay: ["timeofday", "clocktime", "tradetime", "timefilled", "timeexecuted"],
+  status: ["status", "orderstatus", "fillstatus", "executionstatus", "execstatus", "orderstate"],
+  orderId: ["ordernumber", "orderid", "orderno", "ordernum", "orderref", "executionid", "execid", "fillid", "tradeid", "transactionid", "refnumber", "referencenumber"],
   fees: ["fees", "fee", "commission", "commissions", "commissionsandfees", "feesandcomm", "feescomm", "feesandcommissions", "commfee", "totalfees", "charges"],
   expiresAt: ["exp", "expiration", "expirationdate", "expiry", "expdate", "expires", "expirydate"],
   strikePrice: ["strike", "strikeprice", "strk"],
@@ -64,8 +116,37 @@ const EXECUTION_SYNONYMS: Record<ExecutionField, string[]> = {
   spread: ["spread", "strategy", "spreadtype"],
 };
 
+const ORDER_PRICE_HEADERS = new Set(["price", "orderprice", "limitprice"]);
+/** Headers that hold a date with no clock, and headers that hold a clock (or a full date-time) of their own. */
+const DATE_HEADERS = new Set(["date", "tradedate", "execdate", "executiondate", "executeddate", "filldate", "filleddate", "orderdate", "transactiondate", "activitydate"]);
+const CLOCK_HEADERS = new Set(["time", "timeofday", "clocktime", "tradetime", "exectime", "executiontime", "executedtime", "filltime", "filledtime", "timefilled", "timeexecuted"]);
+
+/**
+ * Guess which header feeds each execution field. A file with separate date
+ * and clock columns ("Date" and "Time", "Trade Date" and "Exec Time") gets
+ * the date as the time field and the clock as the time-of-day field, which
+ * parseFillRow combines.
+ */
 export function guessExecutionMapping(headers: string[]): ExecutionMapping {
-  return guessMappingFor(headers, EXECUTION_FIELDS, EXECUTION_SYNONYMS);
+  const mapping = guessMappingFor(headers, EXECUTION_FIELDS, EXECUTION_SYNONYMS);
+  // The order price is only worth guessing from a header that says so; "Net Price" (the price of a whole spread) is not a fallback for a leg.
+  if (mapping.orderPrice && !ORDER_PRICE_HEADERS.has(normalizeHeader(mapping.orderPrice))) delete mapping.orderPrice;
+  if (mapping.time && !mapping.timeOfDay) {
+    const used = new Set(Object.values(mapping));
+    const free = headers.filter((h) => !used.has(h));
+    const chosen = normalizeHeader(mapping.time);
+    if (CLOCK_HEADERS.has(chosen)) {
+      const date = free.find((h) => DATE_HEADERS.has(normalizeHeader(h)));
+      if (date) {
+        mapping.timeOfDay = mapping.time;
+        mapping.time = date;
+      }
+    } else if (DATE_HEADERS.has(chosen)) {
+      const clock = free.find((h) => CLOCK_HEADERS.has(normalizeHeader(h)));
+      if (clock) mapping.timeOfDay = clock;
+    }
+  }
+  return mapping;
 }
 
 /** A broker event that ends a contract without a fill of its own. */
@@ -94,13 +175,31 @@ export interface Fill {
   spread: string | null;
   /** An expiration, assignment or exercise: it closes whichever side of the contract is open, at 0. */
   event: FillEvent | null;
+  /** The broker's order or execution number, when the file has one; part of the trade's identity. */
+  orderId: string | null;
+  /** "order" when the fill price was missing and the order's limit or stop amount stands in for it. */
+  priceSource: "fill" | "order";
 }
+
+/**
+ * Why a row was left out without being an error: it is not a fill at all, it
+ * is an order that never filled, or it is a partial fill whose filled
+ * quantity the file does not give (the transaction history has it).
+ */
+export type SkipKind = "non-trade" | "unfilled" | "partial";
+
+/** Quantity headers that hold what was filled rather than what was ordered, so a partial fill's quantity can be trusted. */
+const FILLED_QUANTITY_HEADERS = new Set(["filledqty", "filledquantity", "qtyfilled", "quantityfilled", "fillqty", "fillquantity", "execqty", "executedqty", "executedquantity", "filled"]);
 
 export type FillResult =
   | { ok: true; fill: Fill }
   | { ok: false; skipped?: false; error: string }
-  /** A row that is not a fill (a dividend, a transfer, interest): left out with its action as the reason, not an error. */
-  | { ok: false; skipped: true; reason: string };
+  /**
+   * A row left out with the cell that said so as the reason, not an error: a
+   * dividend, transfer or interest line ("non-trade"), or an order whose
+   * status is open, working, cancelled, rejected or expired ("unfilled").
+   */
+  | { ok: false; skipped: true; kind: SkipKind; reason: string };
 
 /** OPEN or CLOSE from a position-effect cell; null when the cell is empty, undefined when it says something else. */
 export function parsePositionEffect(raw: string): PositionEffect | null | undefined {
@@ -121,19 +220,22 @@ export function parseFillEvent(raw: string): FillEvent | null {
 }
 
 function cell(record: Record<string, string>, mapping: ExecutionMapping, field: ExecutionField): string | null {
-  const header = mapping[field];
-  if (!header) return null;
-  const value = record[header];
-  if (value === undefined || value === null) return null;
-  const trimmed = String(value).trim();
-  return trimmed === "" ? null : trimmed;
+  return mappedCell(record, mapping, field);
 }
 
 /** One execution row into a fill. `rowNumber` is the line in the file, for messages and notes. */
 export function parseFillRow(record: Record<string, string>, mapping: ExecutionMapping, options: ImportOptions = {}, rowNumber = 0): FillResult {
   const fail = (error: string): FillResult => ({ ok: false, error });
+  const skip = (kind: SkipKind, reason: string): FillResult => ({ ok: false, skipped: true, kind, reason });
+  const col = (field: ExecutionField) => mapping[field];
 
-  // The side comes first: a Schwab history lists dividends and transfers next
+  // An order list carries a status: only executed orders are fills; open, working,
+  // cancelled, rejected and expired ones are left out, not errors.
+  const statusRaw = cell(record, mapping, "status");
+  const status = statusRaw ? parseOrderStatus(statusRaw) : null;
+  if (statusRaw && status === "unfilled") return skip("unfilled", statusRaw);
+
+  // The side comes next: a Schwab history lists dividends and transfers next
   // to fills, with no symbol or quantity, and those rows are skipped, not errors.
   let side: FillSide | null = null;
   let effectFromSide: PositionEffect | null = null;
@@ -148,14 +250,14 @@ export function parseFillRow(record: Record<string, string>, mapping: ExecutionM
       event = parseFillEvent(sideRaw);
       if (!event) {
         const nonTrade = nonTradeAction(sideRaw);
-        if (nonTrade) return { ok: false, skipped: true, reason: nonTrade };
-        return fail(`unrecognised side "${sideRaw}"`);
+        if (nonTrade) return skip("non-trade", nonTrade);
+        return fail(unrecognisedCell("side", col("side")!, sideRaw));
       }
     }
   }
 
   const symbolRaw = cell(record, mapping, "symbol");
-  if (!symbolRaw) return fail("missing symbol");
+  if (!symbolRaw) return fail(missingCell("symbol", col("symbol")));
   let symbol = symbolRaw.toUpperCase();
   let assetClass: AssetClass = options.defaultAssetClass ?? "STOCK";
   if (symbol.startsWith("/")) {
@@ -182,14 +284,14 @@ export function parseFillRow(record: Record<string, string>, mapping: ExecutionM
   const strikeRaw = cell(record, mapping, "strikePrice");
   if (strikeRaw) {
     const parsed = parseNumber(strikeRaw);
-    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(`invalid strike "${strikeRaw}"`);
+    if (parsed === null || new Decimal(parsed).lessThanOrEqualTo(0)) return fail(invalidCell("strike", col("strikePrice")!, strikeRaw));
     strikePrice = parsed;
   }
   const expiresRaw = cell(record, mapping, "expiresAt");
   if (expiresRaw) {
     const parsed = parseFlexibleDate(expiresRaw, { dayFirst: options.dayFirst, timeZone: "UTC" });
     expiresAt = parsed ? expirationInstant(parsed.toISOString().slice(0, 10)) : null;
-    if (!expiresAt) return fail(`invalid expiration "${expiresRaw}"`);
+    if (!expiresAt) return fail(invalidCell("expiration", col("expiresAt")!, expiresRaw));
   }
   if (optionType !== null || (strikePrice !== null && expiresAt !== null)) assetClass = "OPTION";
   if (assetClass !== "OPTION") {
@@ -198,12 +300,20 @@ export function parseFillRow(record: Record<string, string>, mapping: ExecutionM
     expiresAt = null;
   }
 
+  // "5 of 5", "3/5" and "10 Contracts" read as what was filled.
   const quantityRaw = cell(record, mapping, "quantity");
-  if (!quantityRaw) return fail("missing quantity");
+  if (!quantityRaw) return fail(missingCell("quantity", col("quantity")));
   const quantityParsed = parseNumber(quantityRaw);
-  if (quantityParsed === null) return fail(`invalid quantity "${quantityRaw}"`);
+  if (quantityParsed === null) return fail(invalidCell("quantity", col("quantity")!, quantityRaw));
   const signed = new Decimal(quantityParsed);
-  if (signed.isZero()) return fail("quantity must not be zero");
+  if (status === "partial") {
+    // A partial fill is a fill of what was filled, which the file only tells through "N of M" or a filled-quantity
+    // column; a plain order quantity ("10 Contracts" on a Schwab "Closed partial fill") says nothing about it.
+    const filledKnown = isFilledOfTotal(quantityRaw) || FILLED_QUANTITY_HEADERS.has(normalizeHeader(col("quantity") ?? ""));
+    if (!filledKnown) return skip("partial", `${statusRaw}: partial fill, filled quantity unknown; check the transaction history`);
+    if (signed.isZero()) return skip("unfilled", `${statusRaw}, nothing filled`);
+  }
+  if (signed.isZero()) return fail(`zero quantity in column "${col("quantity")}": "${quantityRaw}"`);
 
   if (event) {
     // Whichever side is open gets closed; the matcher settles the direction against the position.
@@ -211,36 +321,48 @@ export function parseFillRow(record: Record<string, string>, mapping: ExecutionM
   } else if (!side && (signed.isNegative() || quantityRaw.trim().startsWith("+"))) {
     side = signed.isNegative() ? "SELL" : "BUY";
   }
-  if (!side) return fail("missing side");
+  if (!side) return fail(`${missingCell("side", col("side"))}, and the quantity "${quantityRaw}" carries no sign`);
 
   let posEffect: PositionEffect | null = event ? "CLOSE" : effectFromSide;
   const effectRaw = event ? null : cell(record, mapping, "posEffect");
   if (effectRaw) {
     const parsed = parsePositionEffect(effectRaw);
-    if (parsed === undefined) return fail(`unrecognised position effect "${effectRaw}"`);
+    if (parsed === undefined) return fail(unrecognisedCell("position effect", col("posEffect")!, effectRaw));
     if (parsed) posEffect = parsed;
   }
 
   // An expiration, assignment or exercise closes the contract at 0; the strike is noted on the trade instead.
+  // A filled row without a fill price falls back to the order's limit or stop amount, when a column for it is mapped.
   let price = "0";
+  let priceSource: Fill["priceSource"] = "fill";
   if (!event) {
-    const priceRaw = cell(record, mapping, "price");
-    if (!priceRaw) return fail("missing price");
+    let priceRaw = cell(record, mapping, "price");
+    if (!priceRaw && col("orderPrice")) {
+      priceRaw = cell(record, mapping, "orderPrice");
+      priceSource = "order";
+    }
+    if (!priceRaw) return fail(missingCell("price", col("price")));
     const parsed = parseNumber(priceRaw);
-    if (parsed === null || new Decimal(parsed).isNegative()) return fail(`invalid price "${priceRaw}"`);
+    if (parsed === null || new Decimal(parsed).isNegative()) return fail(priceCellError("price", (priceSource === "order" ? col("orderPrice") : col("price"))!, priceRaw));
     price = parsed;
   }
 
-  const timeRaw = cell(record, mapping, "time");
-  if (!timeRaw) return fail("missing time");
+  // A date column and a separate clock column ("09/17/2026" and "09:31:05 AM ET") are read as one time.
+  const dateRaw = cell(record, mapping, "time");
+  const clockRaw = cell(record, mapping, "timeOfDay");
+  if (!dateRaw && !clockRaw) return fail(missingCell("time", col("time") ?? col("timeOfDay")));
+  const timeRaw = combineDateAndTime(dateRaw ?? "", clockRaw ?? "");
   const time = parseFlexibleDate(timeRaw, { dayFirst: options.dayFirst, timeZone: options.timeZone ?? "UTC" });
-  if (!time) return fail(`invalid time "${timeRaw}"`);
+  if (!time) {
+    if (dateRaw && clockRaw && timeRaw !== dateRaw && timeRaw !== clockRaw) return fail(`invalid time in columns "${col("time")}" and "${col("timeOfDay")}": "${timeRaw}"`);
+    return fail(invalidCell("time", timeRaw === dateRaw ? col("time")! : col("timeOfDay")!, timeRaw));
+  }
 
   let fees = "0";
   const feesRaw = cell(record, mapping, "fees");
   if (feesRaw) {
     const parsed = parseNumber(feesRaw);
-    if (parsed === null) return fail(`invalid fees "${feesRaw}"`);
+    if (parsed === null) return fail(invalidCell("fees", col("fees")!, feesRaw));
     fees = new Decimal(parsed).abs().toFixed();
   }
 
@@ -270,6 +392,8 @@ export function parseFillRow(record: Record<string, string>, mapping: ExecutionM
       expiresAt,
       spread,
       event,
+      orderId: cell(record, mapping, "orderId"),
+      priceSource,
     },
   };
 }
@@ -313,21 +437,24 @@ export interface MatchOptions {
 export const DEFAULT_MERGE_WINDOW_SECONDS = 120;
 
 /**
- * A file whose dates carry no clock time and run newest first (a Schwab
- * transaction history) is read bottom up, so a same-day open comes before
- * its close. Files with times, ascending dates or a mixed order keep their
- * row order.
+ * A file listed newest first (a Schwab transaction history without times, a
+ * thinkorswim trade history, an order status list) is read bottom up for
+ * fills that share a time, so a same-day or same-minute open comes before
+ * its close. Ascending and mixed files keep their row order. A file that is
+ * mostly descending counts as newest first: an order list sorted by its last
+ * activity has a few placement times out of order.
  */
 export function fillOrder(fills: Fill[]): FillOrder {
-  if (fills.length < 2 || fills.some((f) => f.timeOfDay)) return "as-listed";
+  if (fills.length < 2) return "as-listed";
   const byRow = [...fills].sort((a, b) => a.row - b.row);
-  let descends = false;
+  let descents = 0;
+  let ascents = 0;
   for (let i = 1; i < byRow.length; i++) {
     const delta = byRow[i].time.getTime() - byRow[i - 1].time.getTime();
-    if (delta > 0) return "as-listed";
-    if (delta < 0) descends = true;
+    if (delta > 0) ascents++;
+    else if (delta < 0) descents++;
   }
-  return descends ? "newest-first" : "as-listed";
+  return descents > 0 && descents >= 4 * ascents ? "newest-first" : "as-listed";
 }
 
 interface ClosingBatch {
@@ -337,6 +464,7 @@ interface ClosingBatch {
   fees: Decimal;
   exitAt: Date;
   rows: number[];
+  orderIds: string[];
   /** The position's quantity and fees when the batch began, for the fee split. */
   openQuantity: Decimal;
   openFees: Decimal;
@@ -352,6 +480,7 @@ interface Position {
   entryAt: Date;
   fees: Decimal;
   rows: number[];
+  orderIds: string[];
   spreads: Set<string>;
   batch: ClosingBatch | null;
 }
@@ -391,6 +520,7 @@ interface TradeSpec {
   exitAt: Date | null;
   fees: Decimal;
   rows: number[];
+  orderIds: string[];
   spreads: Set<string>;
   kind: MatchedTrade["kind"];
   extraNote?: string;
@@ -441,6 +571,7 @@ function makeTrade(t: TradeSpec): MatchedTrade {
       strikePrice: f.strikePrice,
       expiration: f.expiresAt ? f.expiresAt.toISOString().slice(0, 10) : null,
       exitAt: t.exitAt,
+      orderIds: t.orderIds,
     }),
     kind: t.kind,
     fillRows: rows,
@@ -464,6 +595,7 @@ function unmatchedOf(f: Fill, quantity: Decimal, fees: Decimal): UnmatchedClose 
     exitAt: f.time,
     fees,
     rows: [f.row],
+    orderIds: f.orderId ? [f.orderId] : [],
     spreads: new Set(f.spread ? [f.spread] : []),
     kind: "unmatched",
     extraNote: [
@@ -526,6 +658,7 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
         exitAt: b.exitAt,
         fees: toDecimal(plan.plan.closed.fees),
         rows: [...p.rows, ...b.rows],
+        orderIds: [...p.orderIds, ...b.orderIds],
         spreads: p.spreads,
         kind: "closed",
         extraNote: eventNote(b.event, p.template),
@@ -542,6 +675,7 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
       existing.quantity = total;
       existing.fees = existing.fees.plus(fees);
       existing.rows.push(f.row);
+      if (f.orderId) existing.orderIds.push(f.orderId);
       if (f.spread) existing.spreads.add(f.spread);
       return;
     }
@@ -553,6 +687,7 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
       entryAt: f.time,
       fees,
       rows: [f.row],
+      orderIds: f.orderId ? [f.orderId] : [],
       spreads: new Set(f.spread ? [f.spread] : []),
       batch: null,
     });
@@ -583,13 +718,14 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
     const excess = quantity.minus(closeQuantity);
     const closeFees = fees.times(closeQuantity).div(quantity);
     if (!position.batch) {
-      position.batch = { quantity: ZERO, value: ZERO, fees: ZERO, exitAt: f.time, rows: [], openQuantity: position.quantity, openFees: position.fees, event: null };
+      position.batch = { quantity: ZERO, value: ZERO, fees: ZERO, exitAt: f.time, rows: [], orderIds: [], openQuantity: position.quantity, openFees: position.fees, event: null };
     }
     position.batch.quantity = position.batch.quantity.plus(closeQuantity);
     position.batch.value = position.batch.value.plus(toDecimal(f.price).times(closeQuantity));
     position.batch.fees = position.batch.fees.plus(closeFees);
     position.batch.exitAt = f.time;
     position.batch.rows.push(f.row);
+    if (f.orderId) position.batch.orderIds.push(f.orderId);
     if (f.event) position.batch.event = f.event;
     position.quantity = position.quantity.minus(closeQuantity);
     if (position.quantity.isZero()) {
@@ -621,6 +757,7 @@ export function matchFills(input: Fill[], options: MatchOptions = {}): MatchResu
         exitAt: null,
         fees: position.fees,
         rows: position.rows,
+        orderIds: position.orderIds,
         spreads: position.spreads,
         kind: "open",
       }),

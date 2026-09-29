@@ -71,8 +71,16 @@ Guiding rules:
   skipped and counted, "Expired" closes the contract at 0, "Assigned" and "Exchange or Exercise"
   close it at 0 with the strike noted (the shares appear as their own stock rows), money cells
   lose their dollar signs and commas, "as of" dates use the first date, and a dated-only file
-  listed newest first is read bottom up so same-day opens precede closes. Each import is an
-  `ImportBatch` (file, mode, counts) that the Import page lists and can undo.
+  listed newest first is read bottom up so same-day opens precede closes. Order lists are read
+  through a Status column: only filled orders become fills, unfilled ones are counted and listed
+  as skipped, a partial fill whose filled quantity the file does not give is flagged, a fill or
+  average price column is preferred over an order price such as "Limit $197.93" (whose amount is
+  read when nothing better exists; "Market" has none), "5 of 5" reads as 5, a date column pairs
+  with a separate clock column, and every row error names the column and the cell, with one hint
+  when most rows fail alike. The Schwab website's order status export is recognised by its header
+  set: fill prices, the last activity as the fill time in US Eastern time, "Closed partial fill"
+  rows flagged, canceled rows skipped and order numbers in each trade's identity. Each import is
+  an `ImportBatch` (file, mode, counts) that the Import page lists and can undo.
 - **Deleting in bulk**: checkboxes on trade rows and cards with select-all for the page or the
   whole filter and a "Delete selected" confirmation that states the count; an admin can delete all
   trades of one account from `/admin/users` after typing the username (trades, screenshots and

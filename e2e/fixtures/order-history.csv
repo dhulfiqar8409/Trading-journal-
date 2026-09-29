@@ -1,0 +1,15 @@
+Date,Time,Action,Symbol,Quantity,Price,Filled Price,Status,Fees
+"09/18/2026",04:00:00 PM ET,Sell to Close,"SPY 10/02/2026 630.00 P",0 of 1,Limit $5.00,,Expired,
+"09/18/2026",03:55:00 PM ET,Sell,NVDA,20 of 50,Limit $176.00,$176.00,Partially Filled,$0.02
+"09/18/2026",03:50:00 PM ET,Buy to Open,"SPY 10/02/2026 630.00 P",1 of 1,Limit $3.15,$3.15,Filled,$0.66
+"09/18/2026",03:45:10 PM ET,Sell to Close,"TSLA 09/25/2026 357.50 P",5 of 5,Limit $6.40,$6.40,Filled,$3.30
+"09/18/2026",02:10:00 PM ET,Sell to Close,"TSLA 09/25/2026 357.50 P",0 of 5,Limit $7.00,,Cancelled,
+"09/18/2026",10:02:30 AM ET,Sell,AAPL,100 of 100,Market,$232.10,Filled,$0.05
+"09/18/2026",09:45:00 AM ET,Buy to Open,"SPY 10/02/2026 640.00 C",0 of 2,Limit $3.10,,Working,
+"09/17/2026",03:30:00 PM ET,Sell,NVDA,0 of 50,Stop $170.00,,Cancelled,
+"09/17/2026",11:20:15 AM ET,Buy to Open,"TSLA 09/25/2026 357.50 P",5 of 5,Limit $3.25,$3.20,Filled,$3.30
+"09/17/2026",10:15:00 AM ET,Buy,NVDA,50 of 50,"Limit $175.00 / Stop $170.00",$174.80,Filled,
+"09/17/2026",09:31:05 AM ET,Buy,AAPL,100 of 100,Limit $226.40,$226.40,Filled,
+"09/16/2026",03:59:00 PM ET,Sell to Close,"QQQ 10/16/2026 480.00 C",2 of 2,Trailing Stop $0.50,$2.95,Filled,$1.32
+"09/16/2026",09:30:00 AM ET,Buy,AMD,0 of 100,Stop Limit $150.00,,Rejected,
+"09/15/2026",09:30:00 AM ET,Buy to Open,"QQQ 10/16/2026 480.00 C",2 of 2,Market,$2.20,Filled,$1.32

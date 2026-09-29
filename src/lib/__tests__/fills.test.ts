@@ -24,6 +24,8 @@ function fill(overrides: Omit<Partial<Fill>, "time"> & { time: string }): Fill {
     strikePrice: null,
     expiresAt: null,
     spread: null,
+    orderId: null,
+    priceSource: "fill",
     ...overrides,
     time: new Date(overrides.time),
   };
@@ -205,7 +207,7 @@ describe("parseFillRow", () => {
     void _side;
     const short = parseFillRow({ ...base, Qty: "-100", "Pos Effect": "" }, noSide);
     expect(short.ok && [short.fill.side, short.fill.posEffect]).toEqual(["SELL", null]);
-    expect(parseFillRow({ ...base, Qty: "100", "Pos Effect": "" }, noSide)).toEqual({ ok: false, error: "missing side" });
+    expect(parseFillRow({ ...base, Qty: "100", "Pos Effect": "" }, noSide)).toEqual({ ok: false, error: 'missing side: no column mapped, and the quantity "100" carries no sign' });
     const stc = parseFillRow({ ...base, Side: "STC", "Pos Effect": "" }, mapping);
     expect(stc.ok && [stc.fill.side, stc.fill.posEffect]).toEqual(["SELL", "CLOSE"]);
     const occ = parseFillRow({ ...base, Symbol: "SPY240920C00450000", Type: "" }, mapping);
@@ -214,14 +216,73 @@ describe("parseFillRow", () => {
     expect(future.ok && future.fill).toMatchObject({ symbol: "ESZ6", assetClass: "FUTURES", multiplier: "50" });
   });
 
-  it("reports row errors", () => {
-    expect(parseFillRow({ ...base, Symbol: "" }, mapping)).toEqual({ ok: false, error: "missing symbol" });
-    expect(parseFillRow({ ...base, Qty: "0" }, mapping)).toEqual({ ok: false, error: "quantity must not be zero" });
-    expect(parseFillRow({ ...base, Side: "hold" }, mapping)).toEqual({ ok: false, error: 'unrecognised side "hold"' });
-    expect(parseFillRow({ ...base, "Pos Effect": "AUTO" }, mapping)).toEqual({ ok: false, error: 'unrecognised position effect "AUTO"' });
-    expect(parseFillRow({ ...base, Price: "" }, mapping)).toEqual({ ok: false, error: "missing price" });
-    expect(parseFillRow({ ...base, "Exec Time": "sometime" }, mapping)).toEqual({ ok: false, error: 'invalid time "sometime"' });
-    expect(parseFillRow({ ...base, Exp: "never", Type: "CALL", Strike: "450" }, mapping)).toEqual({ ok: false, error: 'invalid expiration "never"' });
+  it("reports row errors that name the column and the cell", () => {
+    expect(parseFillRow({ ...base, Symbol: "" }, mapping)).toEqual({ ok: false, error: 'missing symbol: column "Symbol" is empty' });
+    expect(parseFillRow({ ...base, Qty: "0" }, mapping)).toEqual({ ok: false, error: 'zero quantity in column "Qty": "0"' });
+    expect(parseFillRow({ ...base, Qty: "lots" }, mapping)).toEqual({ ok: false, error: 'invalid quantity in column "Qty": "lots"' });
+    expect(parseFillRow({ ...base, Side: "hold" }, mapping)).toEqual({ ok: false, error: 'unrecognised side in column "Side": "hold"' });
+    expect(parseFillRow({ ...base, "Pos Effect": "AUTO" }, mapping)).toEqual({ ok: false, error: 'unrecognised position effect in column "Pos Effect": "AUTO"' });
+    expect(parseFillRow({ ...base, Price: "" }, mapping)).toEqual({ ok: false, error: 'missing price: column "Price" is empty' });
+    expect(parseFillRow({ ...base, Price: "-" }, mapping)).toEqual({ ok: false, error: 'missing price: column "Price" is empty' });
+    expect(parseFillRow({ ...base, Price: "abc" }, mapping)).toEqual({ ok: false, error: 'invalid price in column "Price": "abc"' });
+    expect(parseFillRow({ ...base, Price: "-5" }, mapping)).toEqual({ ok: false, error: 'invalid price in column "Price": "-5"' });
+    const market = parseFillRow({ ...base, Price: "Market" }, mapping);
+    expect(!market.ok && !market.skipped && market.error).toBe(
+      'no price in column "Price": "Market" is an order type without an amount, so the row has no price; map a fill-price column (Filled Price, Avg Price, Execution Price) instead',
+    );
+    expect(parseFillRow({ ...base, "Exec Time": "sometime" }, mapping)).toEqual({ ok: false, error: 'invalid time in column "Exec Time": "sometime"' });
+    expect(parseFillRow({ ...base, "Exec Time": "" }, mapping)).toEqual({ ok: false, error: 'missing time: column "Exec Time" is empty' });
+    expect(parseFillRow({ ...base, Exp: "never", Type: "CALL", Strike: "450" }, mapping)).toEqual({ ok: false, error: 'invalid expiration in column "Exp": "never"' });
+    expect(parseFillRow({ ...base, Fees: "lots" }, mapping)).toEqual({ ok: false, error: 'invalid fees in column "Fees": "lots"' });
+    const { price: _price, ...noPrice } = mapping;
+    void _price;
+    expect(parseFillRow(base, noPrice)).toEqual({ ok: false, error: "missing price: no column mapped" });
+    const { side: _side, ...noSide } = mapping;
+    void _side;
+    expect(parseFillRow({ ...base, Qty: "100" }, noSide)).toEqual({ ok: false, error: 'missing side: no column mapped, and the quantity "100" carries no sign' });
+  });
+
+  it("reads an order list: order-type prices, N of M quantities, a separate clock column and a status", () => {
+    const orders: ExecutionMapping = { symbol: "Symbol", side: "Action", quantity: "Quantity", price: "Filled Price", orderPrice: "Price", time: "Date", timeOfDay: "Time", status: "Status", fees: "Fees" };
+    const row = { Date: "09/17/2026", Time: "11:20:15 AM ET", Action: "Buy to Open", Symbol: "TSLA 09/25/2026 357.50 P", Quantity: "5 of 5", Price: "Limit $3.25", "Filled Price": "$3.20", Status: "Filled", Fees: "$3.30" };
+    const filled = parseFillRow(row, orders, { timeZone: "UTC" }, 2);
+    expect(filled.ok && filled.fill).toMatchObject({ symbol: "TSLA", optionType: "PUT", strikePrice: "357.5", side: "BUY", posEffect: "OPEN", quantity: "5", price: "3.2", priceSource: "fill", fees: "3.3", timeOfDay: true, orderId: null });
+    expect(filled.ok && filled.fill.time.toISOString()).toBe("2026-09-17T15:20:15.000Z"); // ET, whatever the import zone
+    // Unfilled statuses are skipped with the status as the reason, whatever else the row says.
+    for (const status of ["Cancelled", "Canceled", "Working", "Open", "Rejected", "Expired", "Replaced", "Pending"]) {
+      expect(parseFillRow({ ...row, Status: status, "Filled Price": "", Quantity: "0 of 5" }, orders), status).toEqual({ ok: false, skipped: true, kind: "unfilled", reason: status });
+    }
+    // A partial fill is a fill of what was filled when the file says how much.
+    const partial = parseFillRow({ ...row, Status: "Partially Filled", Quantity: "2 of 5" }, orders);
+    expect(partial.ok && partial.fill.quantity).toBe("2");
+    expect(parseFillRow({ ...row, Status: "Partially Filled", Quantity: "0 of 5" }, orders)).toEqual({ ok: false, skipped: true, kind: "unfilled", reason: "Partially Filled, nothing filled" });
+    const known = parseFillRow({ ...row, Status: "Closed partial fill", Quantity: "3" }, { ...orders, quantity: "Filled Qty" }, {}, 2);
+    expect(known.ok).toBe(false); // the row has no "Filled Qty" cell
+    const unknown = parseFillRow({ ...row, Status: "Closed partial fill", Quantity: "10 Contracts" }, orders);
+    expect(unknown).toEqual({ ok: false, skipped: true, kind: "partial", reason: "Closed partial fill: partial fill, filled quantity unknown; check the transaction history" });
+    // Without a status column every row is a fill, as before.
+    const { status: _status, ...noStatus } = orders;
+    void _status;
+    expect(parseFillRow({ ...row, Status: "Cancelled" }, noStatus).ok).toBe(true);
+    // The order price stands in when the fill price is missing, and the fill says so.
+    const fallback = parseFillRow({ ...row, "Filled Price": "-" }, orders);
+    expect(fallback.ok && [fallback.fill.price, fallback.fill.priceSource]).toEqual(["3.25", "order"]);
+    const market = parseFillRow({ ...row, "Filled Price": "", Price: "Market" }, orders);
+    expect(!market.ok && !market.skipped && market.error).toContain('no price in column "Price": "Market"');
+    const { orderPrice: _order, ...noOrderPrice } = orders;
+    void _order;
+    expect(parseFillRow({ ...row, "Filled Price": "-" }, noOrderPrice)).toEqual({ ok: false, error: 'missing price: column "Filled Price" is empty' });
+    // A bad clock names both columns; a clock alone still gives a date when the date column is empty.
+    expect(parseFillRow({ ...row, Time: "noon" }, orders)).toEqual({ ok: false, error: 'invalid time in columns "Date" and "Time": "09/17/2026 noon"' });
+    expect(parseFillRow({ ...row, Date: "", Time: "6:37 PM 09/28/2026 ET" }, orders).ok).toBe(true);
+    expect(parseFillRow({ ...row, Date: "", Time: "" }, orders)).toEqual({ ok: false, error: 'missing time: column "Date" is empty' });
+  });
+
+  it("carries the order number into the fill", () => {
+    const withId: ExecutionMapping = { ...mapping, orderId: "Order Number" };
+    const result = parseFillRow({ ...base, "Order Number": "1000000000011" }, withId);
+    expect(result.ok && result.fill.orderId).toBe("1000000000011");
+    expect(parseFillRow({ ...base, "Order Number": "" }, withId).ok && (parseFillRow({ ...base, "Order Number": "" }, withId) as { ok: true; fill: Fill }).fill.orderId).toBeNull();
   });
 
   it("parses position-effect and event cells", () => {
@@ -264,9 +325,56 @@ describe("parseFillRow", () => {
   it("skips non-trade rows rather than failing them", () => {
     const schwab: ExecutionMapping = { symbol: "Symbol", side: "Action", quantity: "Quantity", price: "Price", time: "Date", fees: "Fees & Comm" };
     for (const action of ["Bank Interest", "Journal", "MoneyLink Transfer", "Dividend", "Reinvest Shares", "Stock Split", "Margin Interest", "Wire Funds Received"]) {
-      expect(parseFillRow({ Date: "09/12/2026", Action: action, Symbol: "", Quantity: "", Price: "", "Fees & Comm": "" }, schwab), action).toEqual({ ok: false, skipped: true, reason: action });
+      expect(parseFillRow({ Date: "09/12/2026", Action: action, Symbol: "", Quantity: "", Price: "", "Fees & Comm": "" }, schwab), action).toEqual({ ok: false, skipped: true, kind: "non-trade", reason: action });
     }
-    expect(parseFillRow({ Date: "09/12/2026", Action: "Hold", Symbol: "MSFT", Quantity: "1", Price: "1", "Fees & Comm": "" }, schwab)).toEqual({ ok: false, error: 'unrecognised side "Hold"' });
+    expect(parseFillRow({ Date: "09/12/2026", Action: "Hold", Symbol: "MSFT", Quantity: "1", Price: "1", "Fees & Comm": "" }, schwab)).toEqual({ ok: false, error: 'unrecognised side in column "Action": "Hold"' });
+  });
+});
+
+describe("guessExecutionMapping", () => {
+  it("prefers fill prices and filled quantities, and maps a status column", () => {
+    const m = guessExecutionMapping(["Date", "Time", "Action", "Symbol", "Quantity", "Price", "Filled Price", "Status", "Fees"]);
+    expect(m).toEqual({ symbol: "Symbol", side: "Action", quantity: "Quantity", price: "Filled Price", orderPrice: "Price", time: "Date", timeOfDay: "Time", status: "Status", fees: "Fees" });
+    expect(guessExecutionMapping(["Symbol", "Side", "Quantity", "Filled Qty", "Avg Price", "Price", "Exec Time"])).toMatchObject({ quantity: "Filled Qty", price: "Avg Price", orderPrice: "Price", time: "Exec Time" });
+    expect(guessExecutionMapping(["Symbol", "Side", "Qty", "Execution Price", "Limit Price", "Time"])).toMatchObject({ price: "Execution Price", orderPrice: "Limit Price", time: "Time" });
+    // A lone Price column is still the price, and nothing is guessed for the order price.
+    expect(guessExecutionMapping(["Symbol", "Side", "Qty", "Price", "Time"])).toEqual({ symbol: "Symbol", side: "Side", quantity: "Qty", price: "Price", time: "Time" });
+  });
+
+  it("pairs a date column with its clock column and knows the order-list time headers", () => {
+    expect(guessExecutionMapping(["Trade Date", "Exec Time", "Symbol", "Side", "Qty", "Price"])).toMatchObject({ time: "Trade Date", timeOfDay: "Exec Time" });
+    expect(guessExecutionMapping(["Trade Date", "Trade Time", "Symbol", "Side", "Qty", "Price"])).toMatchObject({ time: "Trade Date", timeOfDay: "Trade Time" });
+    expect(guessExecutionMapping(["Symbol", "Side", "Qty", "Price", "Date/Time"])).toMatchObject({ time: "Date/Time" });
+    expect(guessExecutionMapping(["Symbol", "Side", "Qty", "Price", "Placed", "Executed"])).toMatchObject({ time: "Executed" });
+    expect(guessExecutionMapping(["Symbol", "Side", "Qty", "Price", "Placed", "Filled At"])).toMatchObject({ time: "Filled At" });
+    expect(guessExecutionMapping(["Symbol", "Side", "Qty", "Price", "Placed"])).toMatchObject({ time: "Placed" });
+    // One time column, whatever it is called, needs no partner; "Time in Force" is not a clock.
+    const single = guessExecutionMapping(["Symbol", "Side", "Qty", "Price", "Exec Time", "Time in Force"]);
+    expect(single.time).toBe("Exec Time");
+    expect(single.timeOfDay).toBeUndefined();
+    expect(guessExecutionMapping(["Symbol", "Side", "Qty", "Price", "Date", "Time in Force"]).timeOfDay).toBeUndefined();
+  });
+});
+
+describe("order numbers in the trade identity", () => {
+  it("adds the fills' order numbers to the hash key, so an edited order does not collide and a re-import adds nothing", () => {
+    const fills = [
+      fill({ time: "2026-09-18T14:02:00Z", side: "BUY", posEffect: "OPEN", price: "226.4", quantity: "1000", orderId: "1000000000011" }),
+      fill({ time: "2026-09-18T14:36:00Z", side: "SELL", posEffect: "CLOSE", price: "232.1", quantity: "1000", orderId: "1000000000012" }),
+    ];
+    const result = matchFills(fills);
+    expect(result.trades[0].importHashKey).toBe("AAPL|LONG|1000|226.4|2026-09-18T14:02:00.000Z|exit:2026-09-18T14:36:00.000Z|orders:1000000000011,1000000000012");
+    expect(matchFills([...fills].reverse()).trades[0].importHashKey).toBe(result.trades[0].importHashKey);
+    const edited = matchFills([fills[0], { ...fills[1], orderId: "1000000000099" }]);
+    expect(edited.trades[0].importHashKey).not.toBe(result.trades[0].importHashKey);
+    // Fills without order numbers keep the old keys.
+    const plain = matchFills(fills.map((f) => ({ ...f, orderId: null })));
+    expect(plain.trades[0].importHashKey).toBe("AAPL|LONG|1000|226.4|2026-09-18T14:02:00.000Z|exit:2026-09-18T14:36:00.000Z");
+    // The open remainder carries the open orders only; an unmatched close carries its own.
+    const split = matchFills([fills[0], { ...fills[1], quantity: "400" }]);
+    expect(split.trades.map((t) => t.importHashKey.split("|orders:")[1])).toEqual(["1000000000011,1000000000012", "1000000000011"]);
+    const lone = matchFills([fills[1]]);
+    expect(lone.unmatched[0].trade.importHashKey).toContain("orders:1000000000012");
   });
 });
 
@@ -278,8 +386,27 @@ describe("fillOrder", () => {
     expect(fillOrder([dated(1, "15"), dated(2, "17"), dated(3, "17"), dated(4, "18")])).toBe("as-listed");
     expect(fillOrder([dated(1, "18"), dated(2, "15"), dated(3, "17")])).toBe("as-listed"); // mixed
     expect(fillOrder([dated(1, "17"), dated(2, "17")])).toBe("as-listed"); // one day: nothing to tell
-    expect(fillOrder([fill({ row: 1, time: "2026-09-18T15:00:00Z" }), fill({ row: 2, time: "2026-09-17T15:00:00Z" })])).toBe("as-listed"); // times of day settle the order
+    expect(fillOrder([fill({ row: 1, time: "2026-09-18T15:00:00Z" }), fill({ row: 2, time: "2026-09-17T15:00:00Z" })])).toBe("newest-first"); // with times too: only equal times are affected
     expect(fillOrder([dated(1, "18")])).toBe("as-listed");
+    // Mostly descending counts as newest first: an order list sorted by its last activity has a few placement times out of order.
+    const mostly = [dated(1, "20"), dated(2, "19"), dated(3, "18"), dated(4, "17"), dated(5, "18"), dated(6, "16"), dated(7, "15"), dated(8, "14"), dated(9, "13"), dated(10, "12")];
+    expect(fillOrder(mostly)).toBe("newest-first");
+    expect(fillOrder([dated(1, "20"), dated(2, "19"), dated(3, "20"), dated(4, "18"), dated(5, "19")])).toBe("as-listed");
+  });
+
+  it("reads a same-minute open and close listed newest first from the bottom up", () => {
+    const result = matchFills([
+      fill({ row: 2, time: "2026-09-18T19:45:00Z", side: "SELL", posEffect: "CLOSE", price: "6.4", quantity: "5" }),
+      fill({ row: 3, time: "2026-09-18T19:45:00Z", side: "BUY", posEffect: "OPEN", price: "3.2", quantity: "5" }),
+      fill({ row: 4, time: "2026-09-18T14:36:00Z", side: "SELL", posEffect: "CLOSE", price: "232.1", quantity: "1000", symbol: "AAPL2" }),
+      fill({ row: 5, time: "2026-09-18T14:02:00Z", side: "BUY", posEffect: "OPEN", price: "226.4", quantity: "1000", symbol: "AAPL2" }),
+    ]);
+    expect(result.order).toBe("newest-first");
+    expect(result.unmatched).toEqual([]);
+    expect(result.trades.map((t) => [t.symbol, t.kind, t.entryPrice, t.exitPrice])).toEqual([
+      ["AAPL2", "closed", "226.4", "232.1"],
+      ["AAPL", "closed", "3.2", "6.4"],
+    ]);
   });
 
   it("matches a same-day open and close listed newest first", () => {

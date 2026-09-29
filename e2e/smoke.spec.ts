@@ -6,8 +6,10 @@ import { isoWeekKeyOfDateKey } from "../src/lib/weeks";
 /**
  * Drives the real app end to end: first-run setup (or login when the owner
  * already exists), creating a trade, the trade list and detail pages, the
- * dashboard, CSV import with de-duplication, foreign-origin requests being
- * refused, a phone-width layout check and the sign-out lock-out.
+ * dashboard, CSV import with de-duplication (trade rows, a thinkorswim
+ * statement, a Schwab transaction history, an order history and a Schwab
+ * order status export), foreign-origin requests being refused, a phone-width
+ * layout check and the sign-out lock-out.
  */
 test.describe.configure({ mode: "serial" });
 
@@ -46,6 +48,11 @@ const optionLabel = `${optionSymbol} 450C ${MONTHS[expiryObj.getUTCMonth()].slic
 const schSymbol = `${stamp.at(-5) === "S" ? "K" : "S"}${stamp.slice(-4)}`;
 const SCHWAB_TICKERS: Record<string, string> = { AAPL: "A", SPY: "S", TSLA: "T", NVDA: "N", MSFT: "M", QQQ: "Q", AMD: "D" };
 const schwabHistory = readFileSync(path.join(__dirname, "fixtures", "schwab-transactions.csv"), "utf8").replace(/\b(AAPL|SPY|TSLA|NVDA|MSFT|QQQ|AMD)\b/g, (m) => `${schSymbol}${SCHWAB_TICKERS[m]}`);
+// An order history and a Schwab order status export with this run's symbols, shortened the same way under a lead letter of their own.
+const ordSymbol = `${stamp.at(-5) === "R" ? "J" : "R"}${stamp.slice(-4)}`;
+const ORDER_TICKERS: Record<string, string> = { AAPL: "A", TSLA: "T", NVDA: "N", QQQ: "Q", SPY: "S", AMD: "D", MSFT: "M" };
+const orderHistory = readFileSync(path.join(__dirname, "fixtures", "order-history.csv"), "utf8").replace(/\b(AAPL|TSLA|NVDA|QQQ|SPY|AMD)\b/g, (m) => `${ordSymbol}${ORDER_TICKERS[m]}`);
+const schwabOrders = readFileSync(path.join(__dirname, "fixtures", "schwab-order-status.csv"), "utf8").replace(/\b(AAPL|TSLA|NVDA|QQQ|SPY|AMD|MSFT)\b/g, (m) => `${ordSymbol}${ORDER_TICKERS[m]}`);
 
 let page: Page;
 
@@ -61,6 +68,21 @@ test.afterAll(async () => {
 
 async function shot(name: string) {
   await page.screenshot({ path: path.join(shotsDir, `${name}.png`), fullPage: true });
+}
+
+/**
+ * Chooses a CSV in the import wizard and waits for the wizard to show it. A
+ * change event sent before the page has finished hydrating is lost, so the
+ * file is sent again when the wizard has not picked it up within a few seconds.
+ */
+async function chooseFile(name: string, content: string) {
+  const file = { name, mimeType: "text/csv", buffer: Buffer.from(content) };
+  const loaded = page.getByText(`${name} ·`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.setInputFiles("input[type=file]", file);
+    if (await loaded.waitFor({ state: "visible", timeout: 4000 }).then(() => true, () => false)) return;
+  }
+  await expect(loaded).toBeVisible();
 }
 
 /** A P&L figure button; its accessible name carries both units, e.g. "+2.49R, +$248.80". */
@@ -264,7 +286,7 @@ test("import a small CSV with a duplicate row", async () => {
     `${csvSymbol},Long,7,,2025-09-12 09:30,,0,broken row`,
   ].join("\n");
   await page.goto("/import");
-  await page.setInputFiles("input[type=file]", { name: "trades.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+  await chooseFile("trades.csv", csv);
   await expect(page.getByText("4 rows")).toBeVisible();
   await expect(page.locator("#map-symbol")).toHaveValue("Symbol");
   await expect(page.locator("#map-entryAt")).toHaveValue("Entry Time");
@@ -282,7 +304,7 @@ test("import a small CSV with a duplicate row", async () => {
 
   // Importing the same file again inserts nothing.
   await page.goto("/import");
-  await page.setInputFiles("input[type=file]", { name: "trades.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+  await chooseFile("trades.csv", csv);
   await page.getByRole("button", { name: "Import 3 trades" }).click();
   await expect(page.getByRole("status")).toContainText("Import finished");
   await expect(page.getByRole("status").locator("li").nth(0)).toContainText("0");
@@ -308,7 +330,7 @@ test("bulk delete from the trades list", async () => {
 
 test("a thinkorswim statement becomes round trips, flags an unmatched close, and the import can be undone", async () => {
   await page.goto("/import");
-  await page.setInputFiles("input[type=file]", { name: "statement.csv", mimeType: "text/csv", buffer: Buffer.from(tosStatement) });
+  await chooseFile("statement.csv", tosStatement);
   await expect(page.getByRole("status").filter({ hasText: "thinkorswim Account Statement detected" })).toBeVisible();
   await expect(page.getByLabel(/An execution/)).toBeChecked();
   await expect(page.locator("#map-posEffect")).toHaveValue("Pos Effect");
@@ -346,7 +368,7 @@ test("a thinkorswim statement becomes round trips, flags an unmatched close, and
 
   // The same statement again adds nothing.
   await page.goto("/import");
-  await page.setInputFiles("input[type=file]", { name: "statement.csv", mimeType: "text/csv", buffer: Buffer.from(tosStatement) });
+  await chooseFile("statement.csv", tosStatement);
   await page.getByRole("button", { name: "Import 7 trades" }).click();
   const again = page.getByRole("status").filter({ hasText: "Import finished" });
   await expect(again.locator("li").nth(0)).toContainText("0");
@@ -369,13 +391,13 @@ test("a Schwab transaction history is recognised: phrases, non-trade rows, expir
   // Any file whose side column says "to open" / "to close" is read as executions.
   await page.goto("/import");
   const phrased = ["Symbol,Side,Qty,Price,Time", `${schSymbol}X,Buy to Open,10,20,2025-09-11 09:30`, `${schSymbol}X,Sell to Close,10,22,2025-09-11 10:00`].join("\n");
-  await page.setInputFiles("input[type=file]", { name: "fills.csv", mimeType: "text/csv", buffer: Buffer.from(phrased) });
+  await chooseFile("fills.csv", phrased);
   await expect(page.getByRole("status").filter({ hasText: "Executions detected" })).toBeVisible();
   await expect(page.getByLabel(/An execution/)).toBeChecked();
   await expect(page.getByTestId("match-summary")).toContainText("2 fills → 1 trade (1 closed, 0 open)");
 
   // The Schwab export itself: newest first, no times, phrases in the Action column, non-trade rows in between.
-  await page.setInputFiles("input[type=file]", { name: "schwab.csv", mimeType: "text/csv", buffer: Buffer.from(schwabHistory) });
+  await chooseFile("schwab.csv", schwabHistory);
   await expect(page.getByRole("status").filter({ hasText: "Schwab transaction history detected" })).toBeVisible();
   await expect(page.getByLabel(/An execution/)).toBeChecked();
   for (const [field, header] of [
@@ -433,6 +455,141 @@ test("a Schwab transaction history is recognised: phrases, non-trade rows, expir
   await batch.getByRole("button", { name: "Undo import" }).click();
   await expect(history.getByRole("listitem").filter({ hasText: "schwab.csv" })).toHaveCount(0);
   await page.goto(`/trades?symbol=${schSymbol}`);
+  await expect(page.getByText("No trades match these filters.")).toBeVisible();
+});
+
+test("an order history: fill prices over order prices, statuses, separate date and time columns", async () => {
+  await page.goto("/import");
+  await chooseFile("orders.csv", orderHistory);
+  await expect(page.getByRole("status").filter({ hasText: "Executions detected" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Only rows whose Status says filled become fills" })).toBeVisible();
+  await expect(page.getByLabel(/An execution/)).toBeChecked();
+  for (const [field, header] of [
+    ["symbol", "Symbol"],
+    ["side", "Action"],
+    ["quantity", "Quantity"],
+    ["price", "Filled Price"],
+    ["orderPrice", "Price"],
+    ["time", "Date"],
+    ["timeOfDay", "Time"],
+    ["status", "Status"],
+    ["fees", "Fees"],
+  ] as const) {
+    await expect(page.locator(`#map-${field}`)).toHaveValue(header);
+  }
+  const summary = page.getByTestId("match-summary");
+  await expect(summary).toContainText("9 fills → 6 trades (4 closed, 2 open)");
+  await expect(summary).toContainText("5 unfilled, cancelled or working orders skipped");
+  await expect(page.getByTestId("unfilled-rows")).toContainText("row 6 (Cancelled)");
+  await expect(page.getByTestId("unfilled-rows")).toContainText("Working");
+  await expect(page.getByTestId("error-hint")).toHaveCount(0);
+  const matched = page.locator("table[aria-label='Matched trades']");
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}T 357.5P` })).toContainText("+$1,593.40"); // fill price 3.20, not the 3.25 limit
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}A` })).toContainText("+$569.95"); // a Market order with a fill price
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}Q 480C` })).toContainText("+$147.36");
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}N` }).filter({ hasText: "CLOSED" })).toContainText("+$23.98"); // "20 of 50" partially filled
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}N` }).filter({ hasText: "OPEN" })).toBeVisible();
+  await shot("36-order-history-preview");
+
+  // Mapping the plain Price column by hand: the note about order types appears and the Market rows have no price.
+  await page.selectOption("#map-price", "Price");
+  await expect(page.getByTestId("order-type-prices")).toContainText("order type");
+  await expect(summary).toContainText("7 fills");
+  await expect(matched).toContainText('no price in column "Price": "Market"');
+  await page.selectOption("#map-price", "Filled Price");
+  await expect(summary).toContainText("9 fills → 6 trades");
+
+  // Nothing overflows at phone width with the preview on screen.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const widths = await page.evaluate(() => ({
+    scroll: document.scrollingElement?.scrollWidth ?? 0,
+    client: document.scrollingElement?.clientWidth ?? 0,
+  }));
+  expect(widths.scroll, "import preview overflows horizontally").toBeLessThanOrEqual(widths.client);
+  await shot("37-mobile-order-history");
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  // A file whose price column only says Market, with no fill price, gets one hint above the errors.
+  const marketOnly = [
+    "Date,Time,Action,Symbol,Quantity,Price,Status",
+    `09/17/2026,09:31:05 AM ET,Buy to Open,${ordSymbol}X,10,Market,Filled`,
+    `09/17/2026,10:00:00 AM ET,Sell to Close,${ordSymbol}X,10,Market,Filled`,
+    `09/17/2026,11:00:00 AM ET,Buy to Open,${ordSymbol}X,5,Market,Filled`,
+    `09/17/2026,11:30:00 AM ET,Buy to Open,${ordSymbol}X,5,Limit $20.00,Cancelled`,
+  ].join("\n");
+  await chooseFile("market.csv", marketOnly);
+  await expect(page.getByTestId("match-summary")).toContainText("0 fills → 0 trades");
+  await expect(page.getByTestId("match-summary")).toContainText("3 row errors");
+  await expect(page.getByTestId("error-hint")).toContainText("Every row fails on the price");
+  await expect(page.getByTestId("error-hint")).toContainText("fill-price column");
+});
+
+test("a Schwab order status export: filled orders only, fill prices, Eastern times and order numbers", async () => {
+  await page.goto("/import");
+  await chooseFile("order-status.csv", schwabOrders);
+  const notice = page.getByRole("status").filter({ hasText: "Schwab order status detected" });
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("12 filled orders become fills");
+  await expect(notice).toContainText("4 canceled or open skipped");
+  await expect(notice).toContainText("1 partial fill needs attention");
+  await expect(page.getByLabel(/An execution/)).toBeChecked();
+  for (const [field, header] of [
+    ["symbol", "Symbol"],
+    ["side", "Action"],
+    ["quantity", "Quantity|Face Value"],
+    ["price", "Fill Price"],
+    ["orderPrice", "Price"],
+    ["time", "Last Activity Date(ET)"],
+    ["status", "Status"],
+    ["orderId", "Order Number"],
+  ] as const) {
+    await expect(page.locator(`#map-${field}`)).toHaveValue(header);
+  }
+  const summary = page.getByTestId("match-summary");
+  await expect(summary).toContainText("12 fills → 6 trades (5 closed, 1 open)");
+  await expect(summary).toContainText("4 unfilled, cancelled or working orders skipped");
+  await expect(summary).toContainText("1 partial fill needs attention");
+  await expect(page.getByTestId("partial-rows")).toContainText("filled quantity unknown");
+  await expect(page.getByTestId("unfilled-rows")).toContainText("Canceled");
+  await expect(page.locator("section[aria-label='Unmatched closes']")).toHaveCount(0);
+  const matched = page.locator("table[aria-label='Matched trades']");
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}A` })).toContainText("+$5,700.00"); // "1,000 Shares", a Market buy and a limit sell filled five minutes after it was placed
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}T 357.5P` })).toContainText("+$1,600.00"); // same-minute open and close, read bottom up
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}D` })).toContainText("+$150.00"); // Sell short, then Buy to cover
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}Q 480P` })).toContainText("+$140.00"); // "1 Contract"
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}N 230C` })).toContainText("+$751.20");
+  await expect(matched.getByRole("row").filter({ hasText: `${ordSymbol}S 640C` })).toContainText("OPEN");
+  await shot("38-schwab-orders-preview");
+
+  await page.getByRole("button", { name: "Import 6 trades" }).click();
+  const report = page.getByRole("status").filter({ hasText: "Import finished" });
+  await expect(report.locator("li").nth(0)).toContainText("6");
+  await expect(report.locator("li").nth(1)).toContainText("0");
+  await expect(report).toContainText("4 unfilled, cancelled or working orders skipped");
+  await expect(report).toContainText("1 partial fill skipped");
+
+  await page.goto(`/trades?symbol=${ordSymbol}`);
+  await expect(page.getByText("1–6 of 6")).toBeVisible();
+  await page.goto(`/trades?symbol=${ordSymbol}A`);
+  await expect(figure("no stop, +$5,700.00").first()).toBeVisible();
+  await page.goto(`/trades?symbol=${ordSymbol}D`);
+  await expect(figure("no stop, +$150.00").first()).toBeVisible();
+
+  // The same export again adds nothing: the order numbers are part of each trade's identity.
+  await page.goto("/import");
+  await chooseFile("order-status.csv", schwabOrders);
+  await page.getByRole("button", { name: "Import 6 trades" }).click();
+  const again = page.getByRole("status").filter({ hasText: "Import finished" });
+  await expect(again.locator("li").nth(0)).toContainText("0");
+  await expect(again.locator("li").nth(1)).toContainText("6");
+
+  // Undo the import so the rest of the run starts from a flat book.
+  const history = page.locator("section[aria-label='Import history']");
+  const batch = history.getByRole("listitem").filter({ hasText: "order-status.csv" }).filter({ hasText: "6 inserted" });
+  await expect(batch).toContainText("6 still in the journal");
+  await batch.getByRole("button", { name: "Undo import" }).click();
+  await expect(history.getByRole("listitem").filter({ hasText: "order-status.csv" }).filter({ hasText: "6 inserted" })).toHaveCount(0);
+  await page.goto(`/trades?symbol=${ordSymbol}`);
   await expect(page.getByText("No trades match these filters.")).toBeVisible();
 });
 
@@ -645,7 +802,7 @@ test("weekly review, share links, import presets and exports", async ({ browser 
   // Import mappings can be saved under a broker name and applied again.
   const csv = ["Contract,B/S,Qty,Price,Timestamp", `${csvSymbol}P,Buy,1,100,2025-09-12 09:30`].join("\n");
   await page.goto("/import");
-  await page.setInputFiles("input[type=file]", { name: "broker.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+  await chooseFile("broker.csv", csv);
   await expect(page.locator("#map-symbol")).toHaveValue("Contract");
   await expect(page.locator("#map-side")).toHaveValue("B/S");
   await expect(page.locator("#map-entryPrice")).toHaveValue("Price");

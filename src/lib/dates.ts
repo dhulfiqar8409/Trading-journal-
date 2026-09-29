@@ -1,8 +1,9 @@
 /**
  * Tolerant date parsing for CSV imports. Understands ISO 8601, "YYYY-MM-DD
- * HH:mm[:ss]", US "M/D/YYYY[ h:mm[:ss][ AM|PM]]", day-first variants,
- * "12 Mar 2024", "Mar 12, 2024" and Unix timestamps. Values without an
- * explicit offset are interpreted in `timeZone` (UTC by default).
+ * HH:mm[:ss]", US "M/D/YYYY[ h:mm[:ss][ AM|PM]]" and "h:mm AM M/D/YYYY",
+ * day-first variants, "12 Mar 2024", "Mar 12, 2024" and Unix timestamps, with a trailing Z, UTC,
+ * GMT or US market zone (ET, EST, EDT, CT, MT, PT and friends). Values without
+ * an explicit offset or zone are interpreted in `timeZone` (UTC by default).
  */
 
 import { wallTimeToUtc } from "@/lib/tz";
@@ -32,25 +33,52 @@ interface Pieces {
 }
 
 const TIME_RE = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?\s*(am|pm|a\.m\.|p\.m\.)?$/i;
-const NAMED_ZONE_RE = /\s*(z|utc|gmt)$/i;
+/**
+ * Trailing zone names: Z, UTC and GMT, and the US market abbreviations. The
+ * two-letter ones (ET, CT, MT, PT) follow daylight saving through their IANA
+ * zone; the three-letter ones are fixed offsets. The abbreviation must not
+ * continue a word, so "12 Oct" is not read as 12 O + CT.
+ */
+const ZONE_NAMES: Record<string, string | number> = {
+  z: 0,
+  utc: 0,
+  gmt: 0,
+  et: "America/New_York",
+  est: -300,
+  edt: -240,
+  ct: "America/Chicago",
+  cst: -360,
+  cdt: -300,
+  mt: "America/Denver",
+  mst: -420,
+  mdt: -360,
+  pt: "America/Los_Angeles",
+  pst: -480,
+  pdt: -420,
+};
+const ZONE_NAME_PATTERN = "z|utc|gmt|e[sd]?t|c[sd]?t|m[sd]?t|p[sd]?t";
+const NAMED_ZONE_RE = new RegExp(`\\s*(?<![a-z])(${ZONE_NAME_PATTERN})$`, "i");
 // A numeric offset only counts as a zone when it directly follows a time, so
 // that "3-12-2024" is not read as 3-12 with a -20:24 offset.
 const OFFSET_RE = /(\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d{1,9})?)?\s*(?:am|pm|a\.m\.|p\.m\.)?)\s*([+-]\d{2}:?\d{2})$/i;
 
-function parseZone(text: string): { rest: string; offsetMinutes: number | null } {
+/** The value without its zone, plus either the offset it named or the IANA zone its abbreviation stands for. */
+function parseZone(text: string): { rest: string; offsetMinutes: number | null; zone: string | null } {
   const trimmed = text.trim();
   const named = NAMED_ZONE_RE.exec(trimmed);
   if (named) {
-    return { rest: trimmed.slice(0, named.index).trim(), offsetMinutes: 0 };
+    const rest = trimmed.slice(0, named.index).trim();
+    const zone = ZONE_NAMES[named[1].toLowerCase()];
+    return typeof zone === "number" ? { rest, offsetMinutes: zone, zone: null } : { rest, offsetMinutes: null, zone };
   }
   const numeric = OFFSET_RE.exec(trimmed);
-  if (!numeric) return { rest: trimmed, offsetMinutes: null };
+  if (!numeric) return { rest: trimmed, offsetMinutes: null, zone: null };
   const rest = trimmed.slice(0, numeric.index + numeric[1].length).trim();
   const zone = numeric[2];
   const sign = zone.startsWith("-") ? -1 : 1;
   const digits = zone.slice(1).replace(":", "");
   const offset = sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2, 4)));
-  return { rest, offsetMinutes: offset };
+  return { rest, offsetMinutes: offset, zone: null };
 }
 
 function parseTime(text: string): Pick<Pieces, "hour" | "minute" | "second" | "millisecond"> | null {
@@ -84,6 +112,9 @@ function validDate(year: number, month: number, day: number): boolean {
 
 function splitDateAndTime(text: string): { datePart: string; timePart: string | null } {
   const t = text.trim().replace(/,\s*(\d{1,2}:)/, " $1");
+  // Time first, as in a Schwab order status ("6:37 PM 09/28/2026").
+  const timeFirst = /^(\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d{1,9})?)?\s*(?:am|pm|a\.m\.|p\.m\.)?)\s+(\S.*)$/i.exec(t);
+  if (timeFirst && !/\d:\d{2}/.test(timeFirst[2])) return { datePart: timeFirst[2].trim(), timePart: timeFirst[1].trim() };
   const m = /^(.*?)(?:[T\s]+(\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d{1,9})?)?\s*(?:am|pm|a\.m\.|p\.m\.)?))?$/i.exec(t);
   if (!m) return { datePart: t, timePart: null };
   return { datePart: m[1].trim(), timePart: m[2] ? m[2].trim() : null };
@@ -137,6 +168,28 @@ export function hasTimeOfDay(input: string): boolean {
   return /\d{1,2}:\d{2}/.test(raw) || /^\d{10}$|^\d{13}$/.test(raw);
 }
 
+const CLOCK_RE = new RegExp(`^\\d{1,2}:\\d{2}(?::\\d{2}(?:[.,]\\d{1,9})?)?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?(?:\\s*(?:${ZONE_NAME_PATTERN})|\\s*[+-]\\d{2}:?\\d{2})?$`, "i");
+
+/** True for a clock time on its own, with no date: "09:31:05", "9:31 AM", "09:31:05 ET", "15:10:00-04:00". */
+export function isClockTime(input: string): boolean {
+  return CLOCK_RE.test(input.trim());
+}
+
+/**
+ * A date cell and a separate clock cell as one value for parseFlexibleDate:
+ * "09/17/2026" and "09:31:05 AM ET" become "09/17/2026 09:31:05 AM ET". The
+ * date alone when it already carries a clock or the clock cell is empty; the
+ * clock cell alone when it is a full date-time itself.
+ */
+export function combineDateAndTime(date: string, clock: string): string {
+  const d = date.trim();
+  const c = clock.trim();
+  if (!c || hasTimeOfDay(d)) return d;
+  if (!d) return c;
+  if (!isClockTime(c) && parseFlexibleDate(c)) return c;
+  return `${d} ${c}`;
+}
+
 export function parseFlexibleDate(input: string, options: ParseDateOptions = {}): Date | null {
   // "09/17/2026 as of 09/16/2026": a posting date with the day it applies to; the first date counts.
   const raw = input.trim().replace(/\s+as\s+of\s+.+$/i, "").trim();
@@ -147,7 +200,7 @@ export function parseFlexibleDate(input: string, options: ParseDateOptions = {})
   if (/^\d{10}$/.test(raw)) return new Date(Number(raw) * 1000);
   if (/^\d{13}$/.test(raw)) return new Date(Number(raw));
 
-  const { rest, offsetMinutes } = parseZone(raw);
+  const { rest, offsetMinutes, zone } = parseZone(raw);
   const { datePart, timePart } = splitDateAndTime(rest);
   const ymd = parseDatePart(datePart, options.dayFirst ?? false);
   if (!ymd || !validDate(ymd.year, ymd.month, ymd.day)) return null;
@@ -160,7 +213,7 @@ export function parseFlexibleDate(input: string, options: ParseDateOptions = {})
   }
   const date = wallTimeToUtc(
     { year: ymd.year, month: ymd.month, day: ymd.day, hour: time.hour, minute: time.minute, second: time.second },
-    timeZone,
+    zone ?? timeZone,
   );
   return new Date(date.getTime() + time.millisecond);
 }

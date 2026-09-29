@@ -5,11 +5,12 @@ import { useRouter } from "next/navigation";
 import Papa from "papaparse";
 import { useMemo, useState } from "react";
 import type { AccountOption } from "@/components/trade-form";
-import { ASSET_CLASSES, FIELD_INFO, IMPORT_FIELDS, guessMapping, hasExecutionPhrases, parseImportRow, type ColumnMapping, type ImportOptions } from "@/lib/csv";
+import { ASSET_CLASSES, FIELD_INFO, IMPORT_FIELDS, guessMapping, hasExecutionPhrases, importErrorHint, namesOrderType, parseImportRow, type ColumnMapping, type ImportOptions } from "@/lib/csv";
 import { EXECUTION_FIELDS, EXECUTION_FIELD_INFO, guessExecutionMapping, matchFills, parseFillRow, type ExecutionMapping, type Fill, type MatchResult } from "@/lib/fills";
 import { formatDateTime, formatMoney, formatNumber, formatPrice } from "@/lib/format";
 import { tradeLabel } from "@/lib/options";
 import { SCHWAB_FORMAT, schwabTransactions } from "@/lib/schwab";
+import { SCHWAB_ORDERS_FORMAT, schwabOrderStatus } from "@/lib/schwab-orders";
 import { isThinkorswimStatement, thinkorswimTradeHistory } from "@/lib/thinkorswim";
 import type { ImportModeKey } from "@/lib/validation";
 
@@ -25,6 +26,10 @@ interface ImportReport {
   unmatched?: number;
   /** Rows that were not fills (dividends, transfers, interest) and were left out. */
   nonTrade?: number;
+  /** Orders that never filled (open, working, cancelled, rejected, expired) and were left out. */
+  unfilled?: number;
+  /** Partial fills whose filled quantity the file does not give, left out. */
+  partial?: number;
   batchId?: string;
 }
 
@@ -40,11 +45,21 @@ interface ExecutionPreview {
   errors: { row: number; message: string }[];
   /** Non-trade rows left out, with the action that named them. */
   skipped: { row: number; reason: string }[];
+  /** Orders that never filled, left out, with their status. */
+  unfilled: { row: number; reason: string }[];
+  /** Partial fills whose filled quantity the file does not give, left out. */
+  partial: { row: number; reason: string }[];
+  /** Rows whose fill price was missing and whose order price stands in for it. */
+  orderPriced: number[];
+  /** Rows whose mapped price cell names an order type ("Limit $197.93", "Market"). */
+  orderTypePrices: number;
+  /** One line explaining the likely cause when most rows fail the same way. */
+  hint: string | null;
   match: MatchResult;
 }
 
 /** The file format recognised on load, which picks the mode and the mapping. */
-type Detected = "thinkorswim" | "schwab" | "executions" | null;
+type Detected = "thinkorswim" | "schwab" | "schwab-orders" | "executions" | null;
 
 const MAX_ROWS = 10000;
 const FIELD_LABELS: Record<ImportModeKey, { fields: readonly string[]; info: Record<string, { label: string; required: boolean; hint: string }> }> = {
@@ -80,21 +95,23 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
   );
 
   const tradePreview = useMemo(() => {
-    if (mode !== "trades" || rows.length === 0) return { sample: [], errorCount: 0, okCount: 0, closingCount: 0 };
+    if (mode !== "trades" || rows.length === 0) return { sample: [], errorCount: 0, okCount: 0, closingCount: 0, hint: null as string | null };
     let errorCount = 0;
     let okCount = 0;
     let closingCount = 0; // "Sell to Close" rows: the file lists executions, not trades
+    const errors: { message: string }[] = [];
     const sample: { index: number; result: ReturnType<typeof parseImportRow> }[] = [];
     rows.forEach((row, i) => {
       const result = parseImportRow(row, mapping as ColumnMapping, options);
       if (result.ok) okCount++;
       else {
         errorCount++;
+        errors.push({ message: result.error });
         if (result.reason === "closing-execution") closingCount++;
       }
       if (i < 15) sample.push({ index: i, result });
     });
-    return { sample, errorCount, okCount, closingCount };
+    return { sample, errorCount, okCount, closingCount, hint: importErrorHint(errors, rows.length) };
   }, [mode, rows, mapping, options]);
 
   const executionPreview = useMemo<ExecutionPreview | null>(() => {
@@ -102,13 +119,23 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
     const fills: Fill[] = [];
     const errors: { row: number; message: string }[] = [];
     const skipped: { row: number; reason: string }[] = [];
+    const unfilled: { row: number; reason: string }[] = [];
+    const partial: { row: number; reason: string }[] = [];
+    const orderPriced: number[] = [];
     rows.forEach((row, i) => {
       const result = parseFillRow(row, mapping as ExecutionMapping, options, i + 2);
-      if (result.ok) fills.push(result.fill);
-      else if (result.skipped) skipped.push({ row: i + 2, reason: result.reason });
-      else errors.push({ row: i + 2, message: result.error });
+      if (result.ok) {
+        fills.push(result.fill);
+        if (result.fill.priceSource === "order") orderPriced.push(i + 2);
+      } else if (result.skipped) {
+        const list = result.kind === "unfilled" ? unfilled : result.kind === "partial" ? partial : skipped;
+        list.push({ row: i + 2, reason: result.reason });
+      } else errors.push({ row: i + 2, message: result.error });
     });
-    return { fills: fills.length, errors, skipped, match: matchFills(fills) };
+    const priceHeader = (mapping as ExecutionMapping).price;
+    const orderTypePrices = priceHeader ? rows.filter((row) => namesOrderType(row[priceHeader] ?? "")).length : 0;
+    const considered = rows.length - skipped.length - unfilled.length - partial.length;
+    return { fills: fills.length, errors, skipped, unfilled, partial, orderPriced, orderTypePrices, hint: importErrorHint(errors, considered), match: matchFills(fills) };
   }, [mode, rows, mapping, options]);
 
   const currency = accounts.find((a) => a.id === accountId)?.currency ?? "USD";
@@ -177,7 +204,7 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
     setIncludeUnmatched(new Set());
     if (!file) return;
     setFileName(file.name);
-    const text = await file.text();
+    const text = (await file.text()).replace(/^\uFEFF/, "");
 
     // A thinkorswim Account Statement: only its Account Trade History section holds executions.
     if (isThinkorswimStatement(text)) {
@@ -204,6 +231,19 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
       setDetected("schwab");
       setZone("user");
       if (schwab.rows.length > MAX_ROWS) setParseError(`Only the first ${MAX_ROWS.toLocaleString()} rows are imported.`);
+      return;
+    }
+
+    // The Schwab website's order status: every order with its status, order price and fill price; only the filled ones are fills.
+    const orders = schwabOrderStatus(text);
+    if (orders && orders.rows.length > 0) {
+      setHeaders(orders.headers);
+      setRows(orders.rows.slice(0, MAX_ROWS));
+      setMode("executions");
+      setMapping(guessExecutionMapping(orders.headers));
+      setDetected("schwab-orders");
+      setZone("user");
+      if (orders.rows.length > MAX_ROWS) setParseError(`Only the first ${MAX_ROWS.toLocaleString()} rows are imported.`);
       return;
     }
 
@@ -262,6 +302,13 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
   const closedCount = match ? match.trades.filter((t) => t.kind === "closed").length : 0;
   const openCount = match ? match.trades.length - closedCount : 0;
   const skippedCount = executionPreview?.skipped.length ?? 0;
+  const unfilledCount = executionPreview?.unfilled.length ?? 0;
+  const partialCount = executionPreview?.partial.length ?? 0;
+  const orderPricedCount = executionPreview?.orderPriced.length ?? 0;
+  const previewHint = mode === "trades" ? tradePreview.hint : (executionPreview?.hint ?? null);
+  const reportHint = report ? importErrorHint(report.errors, report.total - (report.nonTrade ?? 0) - (report.unfilled ?? 0) - (report.partial ?? 0)) : null;
+  const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+  const rowList = (list: { row: number; reason: string }[]) => `${list.slice(0, 8).map((r) => `row ${r.row} (${r.reason})`).join(", ")}${list.length > 8 ? ` and ${list.length - 8} more` : ""}`;
 
   return (
     <div className="flex flex-col gap-4">
@@ -270,7 +317,8 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
         <p className="mt-1 text-xs text-muted">
           One row per trade, or one row per execution (fills are matched into trades). Columns are matched automatically and can be adjusted below. Option
           contracts in the symbol column (SPY240920C00450000, TSLA 09/25/2026 357.50 P) are read as options on the underlying; a thinkorswim Account
-          Statement and the Schwab website&apos;s transaction history are recognised as a whole.
+          Statement, the Schwab website&apos;s transaction history and its order status export are recognised as a whole, and an order list with a Status
+          column keeps its filled orders only.
         </p>
         <label className="btn mt-3 w-fit cursor-pointer">
           {fileName ? "Choose another file" : "Choose file"}
@@ -287,7 +335,9 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
               ? `thinkorswim Account Statement detected: only the Account Trade History section is imported (${rows.length.toLocaleString()} fills, matched into trades below); the other sections are ignored. Fill times are read in your zone.`
               : detected === "schwab"
                 ? `${SCHWAB_FORMAT} detected: ${rows.length.toLocaleString()} rows, newest first. Buy and sell rows are fills matched into trades below; dividends, transfers, interest and other non-trade rows are skipped; Expired closes the contract at 0, Assigned and Exchange or Exercise close it with the strike noted. Dates carry no time of day and are read in your zone.`
-                : `Executions detected: the ${mapping.side ?? "side"} column says "to open" and "to close", so each row is read as a fill and matched into trades below. Fill times are read in your zone.`}
+                : detected === "schwab-orders"
+                  ? `${SCHWAB_ORDERS_FORMAT} detected: ${plural(executionPreview?.fills ?? 0, "filled order")} become fills matched into trades below, ${unfilledCount.toLocaleString()} canceled or open skipped, ${plural(partialCount, "partial fill")} ${partialCount === 1 ? "needs" : "need"} attention. The fill price is used, not the order's limit; times are the order's last activity in US Eastern time, whatever your zone; order numbers make each trade's identity, so the same export adds nothing twice.`
+                  : `Executions detected: the ${mapping.side ?? "side"} column says "to open" and "to close", so each row is read as a fill and matched into trades below.${mapping.status ? ` Only rows whose ${mapping.status} says filled become fills; the rest are skipped.` : ""} Fill times are read in your zone.`}
           </p>
         ) : null}
         {parseError ? (
@@ -462,7 +512,9 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
                   {executionPreview?.fills.toLocaleString()} fills → {match.trades.length} trade{match.trades.length === 1 ? "" : "s"} ({closedCount} closed, {openCount} open)
                   {match.unmatched.length ? <span className="text-warn"> · {match.unmatched.length} unmatched close{match.unmatched.length === 1 ? "" : "s"}</span> : null}
                   {skippedCount ? <span> · {skippedCount} non-trade row{skippedCount === 1 ? "" : "s"} skipped</span> : null}
-                  {executionPreview?.errors.length ? <span className="text-warn"> · {executionPreview.errors.length} row errors (skipped)</span> : null}
+                  {unfilledCount ? <span> · {unfilledCount.toLocaleString()} unfilled, cancelled or working order{unfilledCount === 1 ? "" : "s"} skipped</span> : null}
+                  {partialCount ? <span className="text-warn"> · {plural(partialCount, "partial fill")} {partialCount === 1 ? "needs" : "need"} attention</span> : null}
+                  {executionPreview?.errors.length ? <span className="text-warn"> · {executionPreview.errors.length.toLocaleString()} row error{executionPreview.errors.length === 1 ? "" : "s"} (skipped)</span> : null}
                 </p>
               ) : null}
             </div>
@@ -480,6 +532,11 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
             {missingRequired.length ? (
               <p role="alert" className="mt-2 text-sm text-loss">
                 Map the required columns first: {missingRequired.map((f) => info[f].label).join(", ")}.
+              </p>
+            ) : null}
+            {previewHint ? (
+              <p role="alert" data-testid="error-hint" className="mt-2 rounded-lg border border-warn/40 bg-surface-2 px-3 py-2 text-sm">
+                {previewHint}
               </p>
             ) : null}
             {mode === "trades" ? (
@@ -530,7 +587,7 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
             ) : match ? (
               <>
                 {match.order === "newest-first" ? (
-                  <p className="mt-2 text-xs text-muted">Dates without times, newest first: same-day rows are read from the bottom up so an open comes before its close.</p>
+                  <p className="mt-2 text-xs text-muted">Listed newest first: rows that share a time are read from the bottom up so an open comes before its close.</p>
                 ) : null}
                 {match.warnings.length ? (
                   <ul className="mt-2 flex flex-col gap-1 text-xs text-warn" aria-label="Matching notes">
@@ -539,14 +596,35 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
                     ))}
                   </ul>
                 ) : null}
+                {executionPreview?.orderTypePrices ? (
+                  <p className="mt-2 text-xs text-muted" data-testid="order-type-prices">
+                    {plural(executionPreview.orderTypePrices, "row")} carr{executionPreview.orderTypePrices === 1 ? "ies" : "y"} an order type in the &quot;{mapping.price}&quot; column
+                    (&quot;Limit $197.93&quot;, &quot;Market&quot;): the limit or stop amount stands in for the fill price and a Market row has none. If the file has a
+                    fill-price column (Filled Price, Avg Price), map it as the price.
+                  </p>
+                ) : null}
+                {orderPricedCount ? (
+                  <p className="mt-2 text-xs text-warn" data-testid="order-priced-rows">
+                    {plural(orderPricedCount, "fill")} {orderPricedCount === 1 ? "takes" : "take"} the order&apos;s limit or stop amount because the fill price is missing (row
+                    {orderPricedCount === 1 ? "" : "s"} {executionPreview?.orderPriced.slice(0, 8).join(", ")}
+                    {orderPricedCount > 8 ? ` and ${orderPricedCount - 8} more` : ""}); the real fill may differ.
+                  </p>
+                ) : null}
                 {skippedCount ? (
                   <p className="mt-2 text-xs text-muted" data-testid="skipped-rows">
-                    Skipped {skippedCount} non-trade row{skippedCount === 1 ? "" : "s"}:{" "}
-                    {executionPreview?.skipped
-                      .slice(0, 8)
-                      .map((r) => `row ${r.row} (${r.reason})`)
-                      .join(", ")}
-                    {skippedCount > 8 ? ` and ${skippedCount - 8} more` : ""}.
+                    Skipped {skippedCount} non-trade row{skippedCount === 1 ? "" : "s"}: {rowList(executionPreview?.skipped ?? [])}.
+                  </p>
+                ) : null}
+                {unfilledCount ? (
+                  <p className="mt-2 text-xs text-muted" data-testid="unfilled-rows">
+                    Skipped {unfilledCount.toLocaleString()} unfilled, cancelled or working order{unfilledCount === 1 ? "" : "s"} (only filled orders become fills):{" "}
+                    {rowList(executionPreview?.unfilled ?? [])}.
+                  </p>
+                ) : null}
+                {partialCount ? (
+                  <p className="mt-2 text-xs text-warn" data-testid="partial-rows">
+                    {plural(partialCount, "partial fill")} need{partialCount === 1 ? "s" : ""} attention and {partialCount === 1 ? "is" : "are"} skipped: the file shows the order
+                    quantity, not what was filled. {rowList(executionPreview?.partial ?? [])}. The transaction history has the filled part.
                   </p>
                 ) : null}
                 <div className="mt-3 overflow-x-auto">
@@ -682,6 +760,21 @@ export function ImportWizard({ accounts, timeZone, presets: initialPresets = [] 
                 {report.nonTrade ? (
                   <p className="mt-2 text-xs text-ink-2">
                     {report.nonTrade} non-trade row{report.nonTrade === 1 ? "" : "s"} (dividends, transfers, interest) skipped.
+                  </p>
+                ) : null}
+                {report.unfilled ? (
+                  <p className="mt-2 text-xs text-ink-2">
+                    {report.unfilled.toLocaleString()} unfilled, cancelled or working order{report.unfilled === 1 ? "" : "s"} skipped: only filled orders become fills.
+                  </p>
+                ) : null}
+                {report.partial ? (
+                  <p className="mt-2 text-xs text-warn">
+                    {plural(report.partial, "partial fill")} skipped: the file does not give the filled quantity; the transaction history has it.
+                  </p>
+                ) : null}
+                {reportHint ? (
+                  <p role="alert" className="mt-2 text-xs text-warn">
+                    {reportHint}
                   </p>
                 ) : null}
                 {report.errors.length ? (
